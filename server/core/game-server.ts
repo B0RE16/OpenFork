@@ -44,7 +44,8 @@ export class GameServer {
   private readonly deps: GameServerDeps;
   private readonly random: () => number;
   private readonly worlds = new Map<string, World>();
-  private readonly sessions = new Map<ConnId, { identity: Identity | null }>();
+  /** Per connection: who it is, and its messages handled one after another. */
+  private readonly sessions = new Map<ConnId, { identity: Identity | null; chain: Promise<void> }>();
   /** identity id → lobby code */
   private readonly memberOf = new Map<string, string>();
   readonly lobbies = new Map<string, Lobby>();
@@ -66,7 +67,7 @@ export class GameServer {
   // -- connections ------------------------------------------------------------------------
 
   handleConnect(conn: ConnId): void {
-    this.sessions.set(conn, { identity: null });
+    this.sessions.set(conn, { identity: null, chain: Promise.resolve() });
   }
 
   handleDisconnect(conn: ConnId): void {
@@ -84,7 +85,15 @@ export class GameServer {
     }
   }
 
-  async handleMessage(conn: ConnId, raw: unknown): Promise<void> {
+  /** Messages from one connection are handled in order (hello is async). */
+  handleMessage(conn: ConnId, raw: unknown): Promise<void> {
+    const session = this.sessions.get(conn);
+    if (!session) return Promise.resolve();
+    session.chain = session.chain.then(() => this.process(conn, raw)).catch((e) => this.log(`message failed: ${e}`));
+    return session.chain;
+  }
+
+  private async process(conn: ConnId, raw: unknown): Promise<void> {
     const session = this.sessions.get(conn);
     if (!session) return;
     const msg = parseClientMessage(raw);

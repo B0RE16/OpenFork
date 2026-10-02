@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenFork</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main id="home" class="screen">
+      <div class="card home-card">
+        <h1>OpenFork</h1>
+        <p class="tagline">Fight over Europe, province by province. Dig in, hold the line, take their capital.</p>
+        <label>Your name <input id="name" maxlength="24" autocomplete="nickname" /></label>
+        <button id="create" class="primary">Create a private lobby</button>
+        <div class="row">
+          <input id="code" maxlength="8" placeholder="Lobby code" autocapitalize="characters" />
+          <button id="join">Join</button>
+        </div>
+      </div>
+    </main>
+
+    <main id="lobby" class="screen hidden">
+      <div class="card lobby-card">
+        <header class="lobby-head">
+          <h2>Lobby <span id="lobby-code" class="code"></span></h2>
+          <div class="row">
+            <button id="copy-link">Copy invite link</button>
+            <button id="leave">Leave</button>
+          </div>
+        </header>
+        <div class="lobby-grid">
+          <section>
+            <h3>Players</h3>
+            <ul id="members" class="members"></ul>
+            <p class="hint">Empty seats are filled with bots when the game starts.</p>
+            <h3>Settings</h3>
+            <div id="settings" class="settings"></div>
+          </section>
+          <section>
+            <h3>Pick a country</h3>
+            <div id="countries" class="countries"></div>
+          </section>
+        </div>
+        <footer class="row end">
+          <span id="lobby-status" class="hint"></span>
+          <button id="start" class="primary">Start game</button>
+        </footer>
+      </div>
+    </main>
+
+    <main id="game" class="screen hidden">
+      <canvas id="map"></canvas>
+      <div id="topbar" class="hud topbar"></div>
+      <div id="players" class="hud players"></div>
+      <div id="panel" class="hud panel hidden"></div>
+      <div id="feed" class="hud feed"></div>
+      <div id="help" class="hud help">
+        <b>Left click</b> select · <b>drag</b> box-select · <b>right click</b> send · <b>right drag</b> pan · <b>wheel</b> zoom<br />
+        <b>X</b> split · <b>G</b> merge · <b>H</b> halt · <b>Space</b> capital · <b>1-4</b> build · <b>Q/E</b> produce
+      </div>
+      <div id="over" class="overlay hidden">
+        <div class="card">
+          <h2 id="over-title"></h2>
+          <button id="over-back" class="primary">Back to the lobby</button>
+        </div>
+      </div>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+    <div id="offline" class="offline hidden">Reconnecting…</div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

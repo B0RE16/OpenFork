@@ -1,6 +1,6 @@
 // Every gameplay number lives here (DESIGN.md has the rules in words). Rates are per second
 // unless they say otherwise; the server multiplies by the tick length.
-import type { RegionSize, Terrain, Trait } from './map.ts';
+import type { Region, RegionSize, Terrain, Trait } from './map.ts';
 
 export const TICK_MS = 100;
 /** How often clients get a full state snapshot. */
@@ -210,3 +210,20 @@ export type BotDifficulty = 'easy' | 'normal' | 'hard';
 export const DISCONNECT_BOT_SECONDS = 10;
 
 export const PLAYER_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45'];
+
+// -- per-region numbers -----------------------------------------------------------------------
+
+export function stackCap(region: Region, infra: number): number {
+  return Math.max(STACK_MIN, STACK_SIZE[region.size] + STACK_TERRAIN[region.terrain]) + infra;
+}
+
+export function supplyCapacity(region: Region, infra: number): number {
+  const base = (SUPPLY_BASE + SUPPLY_PER_INFRA * infra) * SUPPLY_TERRAIN[region.terrain];
+  return region.traits.includes('city') ? base * SUPPLY_CITY : base;
+}
+
+/** Seconds to capture a region with blobs of the given (best) training. */
+export function captureSeconds(region: Region, fort: number, training: number): number {
+  const base = CAPTURE_SECONDS * CAPTURE_SIZE[region.size] * CAPTURE_TERRAIN[region.terrain] * (1 + CAPTURE_FORT * fort);
+  return base / (1 + (CAPTURE_TRAINING * training) / MAX_TRAINING);
+}
