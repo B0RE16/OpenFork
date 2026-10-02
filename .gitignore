@@ -1,0 +1,7 @@
+node_modules/
+public/app.js
+public/app.js.map
+# downloaded map sources (scripts/build-map.ts)
+.cache/
+# Local editor/assistant settings
+.claude/

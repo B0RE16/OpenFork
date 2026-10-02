@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenFork</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main id="home" class="screen">
+      <div class="card home-card">
+        <div class="classbar"><span>Ops // Briefing</span><span>Unclassified</span></div>
+        <h1>Open<span>Fork</span></h1>
+        <p class="tagline">Theatre: Europe. Take the provinces, dig in, hold the line, seize their capital.</p>
+        <label>Callsign <input id="name" maxlength="24" autocomplete="nickname" /></label>
+        <button id="create" class="primary">Open a private lobby</button>
+        <div class="row">
+          <input id="code" maxlength="8" placeholder="LOBBY CODE" autocapitalize="characters" />
+          <button id="join">Join</button>
+        </div>
+      </div>
+    </main>
+
+    <main id="lobby" class="screen hidden">
+      <div class="card lobby-card">
+        <div class="classbar"><span>Ops // Lobby <span id="lobby-code" class="code"></span></span><span>Mission planning</span></div>
+        <header class="lobby-head">
+          <h2>Order of battle</h2>
+          <div class="row">
+            <button id="copy-link">Copy invite link</button>
+            <button id="leave">Leave</button>
+          </div>
+        </header>
+        <div class="lobby-grid">
+          <section>
+            <h3>Commanders</h3>
+            <ul id="members" class="members"></ul>
+            <p class="hint">Empty seats are filled with bots when the game starts.</p>
+            <h3>Parameters</h3>
+            <div id="settings" class="settings"></div>
+          </section>
+          <section>
+            <h3>Pick a country</h3>
+            <div id="countries" class="countries"></div>
+          </section>
+        </div>
+        <footer class="row end">
+          <span id="lobby-status" class="hint"></span>
+          <button id="start" class="primary">Start game</button>
+        </footer>
+      </div>
+    </main>
+
+    <main id="game" class="screen hidden">
+      <canvas id="map"></canvas>
+      <div id="topbar" class="hud topbar"></div>
+      <div id="players" class="hud players"></div>
+      <div id="panel" class="hud panel hidden"></div>
+      <div id="feed" class="hud feed"></div>
+      <div id="offers" class="hud offers hidden"></div>
+      <div id="legend" class="hud legend hidden">
+        <div class="classbar"><span>Supply</span><span>V</span></div>
+        <div><i class="key in"></i>in supply <i class="key edge"></i>edge of reach <i class="key cut"></i>cut off</div>
+        <div>Crate = hub (capital, city) · bar under units = load vs capacity</div>
+      </div>
+      <div id="minimap-box" class="hud minimap">
+        <div class="classbar"><span>Theatre</span></div>
+        <canvas id="minimap"></canvas>
+      </div>
+      <div id="help" class="hud help">
+        <div class="classbar"><span>Controls</span></div>
+        <div><b>LMB</b> select · <b>drag</b> box · <b>RMB</b> send · <b>RMB drag</b> pan · <b>wheel</b> zoom</div>
+        <div><b>2×click</b> all units in region · <b>X</b> split · <b>G</b> merge · <b>H</b> halt</div>
+        <div><b>V</b> supply · <b>Space</b> capital · <b>1-4</b> build · <b>Q</b>/<b>E</b> produce</div>
+      </div>
+      <div id="over" class="overlay hidden">
+        <div class="card">
+          <div class="classbar"><span>Flash // End of operations</span></div>
+          <h2 id="over-title"></h2>
+          <button id="over-back" class="primary">Back to the lobby</button>
+        </div>
+      </div>
+    </main>
+
+    <div id="confirm" class="overlay hidden">
+      <div class="card">
+        <div class="classbar"><span id="confirm-head">Confirm</span></div>
+        <p id="confirm-text"></p>
+        <div class="row end">
+          <button id="confirm-no">Cancel</button>
+          <button id="confirm-yes" class="primary danger">Confirm</button>
+        </div>
+      </div>
+    </div>
+    <div id="toast" class="toast hidden"></div>
+    <div id="offline" class="offline hidden">Signal lost: reconnecting…</div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
