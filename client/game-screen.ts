@@ -102,6 +102,7 @@ export class GameScreen {
       snap: () => this.snap,
       unitAt: (id: number) => this.view.screenOfUnit(id),
       items: () => this.view.drawnItems(),
+      artOffLand: () => this.view.artOffLand(),
       screenOf: (region: number) => {
         const r = this.map.regions[region];
         return this.view.toScreen(r.x, r.y);

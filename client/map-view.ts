@@ -194,6 +194,20 @@ export class MapView {
     return this.placed.map((p) => ({ ids: p.ids, x: p.x, y: p.y, group: p.group, stack: p.stack }));
   }
 
+  /** Painted town/building/road pixels that sit on water or another region (for tests). */
+  artOffLand(): { water: number; total: number } {
+    const W = this.map.width;
+    const data = (this.developLayer.getContext('2d') as CanvasRenderingContext2D).getImageData(0, 0, W, this.map.height).data;
+    let water = 0;
+    let total = 0;
+    for (let i = 0; i < this.grid.length; i++) {
+      if (data[i * 4 + 3] === 0) continue;
+      total++;
+      if (this.grid[i] === WATER) water++;
+    }
+    return { water, total };
+  }
+
   /** The token or stack under a screen point, or null. */
   itemAt(sx: number, sy: number): { ids: number[]; group: string; stack: boolean } | null {
     for (let i = this.placed.length - 1; i >= 0; i--) {
@@ -343,6 +357,12 @@ export class MapView {
     return this.grid[y * this.map.width + x];
   }
 
+  /** Whether a w×h box at (x, y) lies wholly on a region's land. */
+  private within(region: number, x: number, y: number, w: number, h: number): boolean {
+    for (let dy = 0; dy < h; dy++) for (let dx = 0; dx < w; dx++) if (this.landOf(x + dx, y + dy) !== region) return false;
+    return true;
+  }
+
   /** Spots in a region where a 6×5 sprite fits on its own land, clear of the town. */
   private spotsIn(region: number): Array<[number, number]> {
     let list = this.spots.get(region);
@@ -391,7 +411,7 @@ export class MapView {
         const y = Math.round(y0 + ((y1 - y0) * i) / n);
         if (this.landOf(x, y) === WATER) continue;
         ctx.fillStyle = ROAD_SHADE;
-        ctx.fillRect(x, y + 1, 1, 1);
+        if (this.landOf(x, y + 1) !== WATER) ctx.fillRect(x, y + 1, 1, 1);
         ctx.fillStyle = ROAD_COLOR;
         ctx.fillRect(x, y, 1, 1);
       }
@@ -418,13 +438,15 @@ export class MapView {
       const houses = 2 + 3 * level;
       let placed = 0;
       let [gx, gy, dx, dy, leg, steps, turns] = [0, 0, 1, 0, 1, 0, 0];
-      for (let guard = 0; placed < houses && guard < 200; guard++) {
+      for (let guard = 0; placed < houses && guard < 400; guard++) {
         const x = cx + gx * 4 - 1;
         const y = cy + gy * 4 - 1;
-        if (this.landOf(x + 1, y + 1) === i) {
-          const tall = level >= 3 && placed < level - 1;
-          const sprite = tall ? MAP_ART.tower : MAP_ART.houses[(gx * 7 + gy * 3 + 99) % MAP_ART.houses.length];
-          ctx.drawImage(sprite, x, tall ? y - 2 : y);
+        const tall = level >= 3 && placed < level - 1;
+        const sprite = tall ? MAP_ART.tower : MAP_ART.houses[(gx * 7 + gy * 3 + 99) % MAP_ART.houses.length];
+        const top = tall ? y - 2 : y;
+        // Every pixel of it on this region's land: nothing out on the sea or over a border.
+        if (this.within(i, x, top, sprite.width, sprite.height)) {
+          ctx.drawImage(sprite, x, top);
           placed++;
         }
         gx += dx;
