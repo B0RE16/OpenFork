@@ -41,15 +41,44 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 ## 3. Economy
 - Resources: **money, manpower, oil, steel**.
 - **Yields:** every region gives a little money + manpower. Traits add the rest: industry →
-  steel, oil field → oil, farmland → manpower, city → money.
+  steel, oil field → oil, farmland → manpower. Cities pay tax: +0.6 money and +0.15 manpower
+  per level, every second.
 - **Upkeep:** each blob costs money per minute, scaled by its size and type. If income goes
   below upkeep, **blobs wither**: they lose strength and training until you're back in the
   plus.
-- **Buildings (v1):** barracks, factory, fort (levels), infrastructure (levels).
-  - Placement is limited by region type: factories only in industry or city regions, and so
-    on.
-  - You pick what and where, pay, and it **builds over time in the background**. No builder
-    units.
+- **Cities** (levels 1–5) are the heart of development.
+  - The map's cities are the real ones with 500k people or more; their starting level comes
+    from the population (Paris, Moscow, Istanbul 5).
+  - Your capital starts at level 3 or more; cities of countries nobody plays start at 1, so
+    nobody gets a free metropolis.
+  - **Expand city** (a build, cost and time grow with the level) gives more tax, a slot, +1
+    stack cap and one more hop of supply reach.
+  - **Found a city** in a region of yours that's in supply and not next to another city
+    ($400, 60 steel, 90 s). It starts at level 1 and is a supply hub.
+- **Slots:** a region has 1 (small), 2 (medium) or 3 (large), plus its city level. Every
+  building but cities and roads takes one (a fort takes one for all its levels). Choosing
+  what a region is for is the trade-off; demolishing frees a slot at once, with no refund.
+- **Economic buildings** go only within 2 regions of one of your cities:
+  - Farm (+0.3 manpower/s): farmland or plains.
+  - Mine (+0.4 steel/s on industry, +0.25 on hills or mountains).
+  - Oil well (+0.4 oil/s): oil fields.
+  - Market (+0.4 money/s): anywhere.
+  Several of the same kind per region are fine.
+- **Military buildings:** fort (levels 1–3) anywhere you own; barracks and factory in cities.
+- **Roads** join two of your regions across their border: crossing is 40% faster (for
+  anyone, invaders too) and the border counts as half a hop for supply. Paint them by
+  dragging across regions.
+- You pick what and where, pay, and it **builds over time in the background**. No builder
+  units.
+  - **Placement mode:** pick a building in the build bar (or 1–9), then click one of your
+    regions (roads: drag); Shift places more. Valid regions light up green, and the bar
+    shows the exact cost of the next level and the free slots in the region under the
+    cursor.
+  - **Build queue:** a busy region queues up to 3 more builds behind the one under way. Each
+    is paid when placed and can be cancelled for a full refund (cancelling a fort or city
+    level also cancels the higher levels queued after it). A captured region's queue is
+    lost.
+  - Towns, fields, mines, derricks, market halls and roads are drawn into the map itself.
   - A captured region's buildings go **intact to the captor**.
 
 ## 4. Units (blobs)
@@ -70,14 +99,14 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
   - Splitting is free; both halves keep their training.
 - **Refill:** a damaged blob in supply slowly refills, paying manpower (plus steel for tanks).
 - **Stack cap:** each region holds a limited number of tokens per player. The cap depends on
-  region size and terrain and goes up with infrastructure. Units only passing through their
+  region size and terrain and goes up by 1 per fort level and per city level. Units only passing through their
   own land don't count; without that, armies jam behind the front.
 
 ## 5. Movement
 - **RTS controls:** click or box-select blobs, right-click a region to send them, and use keys
   for split, merge and build.
 - **Pathing:** blobs path through any region. Infantry takes about 5.5 s to cross one plains
-  region; terrain changes that, and infrastructure makes it faster.
+  region; terrain changes that, and roads make it faster.
 - **Zone of control:** crossing enemy-owned land is slower than crossing your own, and forts
   there slow it more. A fort without units in it only slows; it can't stop anything.
 - **Running into enemies:** if an enemy region on the path holds enemy blobs, the blob stops
@@ -99,10 +128,10 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
   capture timer starts.
 
 ## 7. Supply
-- **Hubs:** your capital and every **city** region you own. A region is in supply if it
-  connects to a hub through your land within reach.
-- **Capacity:** each region has a supply capacity, raised by infrastructure. More blobs than
-  capacity means partial supply.
+- **Hubs:** every **city** you own (your capital is one). A city reaches 3 + its level
+  regions through your land (a level-3 capital: 6); a border with a road counts as half.
+- **Capacity:** each region has a supply capacity by terrain, raised by a city in it. More
+  blobs than capacity means partial supply.
 - **Out of supply:**
   - blobs weaken and slowly die;
   - they can't refill or drill;
@@ -170,7 +199,8 @@ going their way. A bot playing for a disconnected person never starts a war.
 | Capture time, empty plains, medium size | 6.5 s (× terrain/size/fort, ÷ training) |
 | Infantry / tank production | 20 s / 30 s |
 | Truce after peace / peace offer stands | 180 s / 30 s |
-| Supply reach from a hub | 6 regions |
+| Supply reach from a city | 3 + its level (roads: half a hop) |
 | Base yield per region (money / manpower) | 0.25 / 0.15 per s |
-| Stack cap | 2–4 tokens by size/terrain, +1 per infrastructure level (max 3) |
+| Stack cap | 2–4 tokens by size/terrain, +1 per fort level, +1 per city level |
+| Slots | 1 / 2 / 3 by size, + city level |
 | Retreat cost | −15% strength, −10 training |

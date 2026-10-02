@@ -29,12 +29,13 @@ to your friends, pick countries, and start. Bots fill the empty seats.
 | | |
 |---|---|
 | Left click / drag | select a unit or region / box-select your units (Shift adds) |
-| Double-click | all your units standing in that region |
+| Click a stack | expand it into its units, to pick single ones (click elsewhere closes it) |
+| Double-click | a stack of yours: all of its units; elsewhere: all your units in that region |
 | Right click | send the selected units to a region (they path there, fighting and capturing on the way) |
 | Right drag, WASD, arrows | pan |
 | Wheel | zoom |
 | X / G / H | split / merge / halt the selected units |
-| 1–4 | build barracks / factory / fort / infrastructure in the selected region |
+| 1–9 or the build bar | placement mode: farm, mine, oil well, market, city (found or expand), fort, barracks, factory, road. Click one of your regions (roads: drag across regions); Shift places more, Esc / right click stops; a busy region queues it |
 | Q / E | queue infantry / tanks at the selected region's barracks / factory |
 | V | supply overlay: hubs, reach, cut-off regions, load per region |
 | Minimap (bottom right) | click or drag to move the view |

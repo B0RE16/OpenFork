@@ -9,8 +9,8 @@ export const WATER = 0xffff;
 export type Terrain = 'plains' | 'forest' | 'hills' | 'mountains';
 export const TERRAINS: readonly Terrain[] = ['plains', 'forest', 'hills', 'mountains'];
 
-export type Trait = 'city' | 'industry' | 'oil' | 'farmland';
-export const TRAITS: readonly Trait[] = ['city', 'industry', 'oil', 'farmland'];
+export type Trait = 'industry' | 'oil' | 'farmland';
+export const TRAITS: readonly Trait[] = ['industry', 'oil', 'farmland'];
 
 export type RegionSize = 'small' | 'medium' | 'large';
 
@@ -31,6 +31,10 @@ export interface Region {
   country: string;
   terrain: Terrain;
   traits: Trait[];
+  /** A city here at the start: its level (1-5, from the real population), or absent. */
+  city?: number;
+  /** Where the city really is (pixel), for drawing the town. */
+  cityAt?: [number, number];
   size: RegionSize;
   /** Land pixels. */
   area: number;

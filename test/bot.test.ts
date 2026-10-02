@@ -35,6 +35,15 @@ describe('bots on Europe', () => {
     assert.ok(!events.some((e) => e.kind === 'war'), 'nobody was provoked, and normal bots wait 5 minutes');
   });
 
+  it('normal bots develop: economic buildings, bigger cities and roads', () => {
+    const { sim } = play('normal', 600);
+    const econ = sim.state.regions.reduce((n, r) => n + (r.owner >= 0 ? r.econ.farm + r.econ.mine + r.econ.well + r.econ.market : 0), 0);
+    const grown = sim.state.players.filter((p) => sim.state.regions[p.capital].city > 3).length;
+    assert.ok(econ >= sim.state.players.length * 3, `only ${econ} economic buildings`);
+    assert.ok(grown >= 1, 'no capital grew');
+    assert.ok(sim.state.roads.size >= sim.state.players.length, `only ${sim.state.roads.size} roads`);
+  });
+
   it('hard bots pick on weaker neighbours, and fight', () => {
     const { events } = play('hard', 720);
     const war = events.find((e) => e.kind === 'war');

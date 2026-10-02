@@ -83,8 +83,6 @@ export const TERRAIN_MOVE: Record<Terrain, number> = { plains: 1, forest: 0.7, h
 /** Speed into enemy-owned land (zone of control), and how much each fort level there takes off. */
 export const ENEMY_LAND_MOVE = 0.7;
 export const FORT_MOVE_PENALTY = 0.1;
-/** Speed bonus per infrastructure level when moving into your own region. */
-export const INFRA_MOVE_BONUS = 0.15;
 /** Leaving a battle costs this share of strength and this much training. */
 export const RETREAT_STRENGTH_LOSS = 0.15;
 export const RETREAT_TRAINING_LOSS = 10;
@@ -128,13 +126,14 @@ export const MERGE_PENALTY = 10;
 
 // -- supply -----------------------------------------------------------------------------------
 
-/** A region is supplied if a hub (capital or owned city) is at most this many owned regions away. */
-export const SUPPLY_RANGE = 6;
-/** Supply capacity of a region, by terrain, and what infrastructure and cities add. */
+/** Every city is a supply hub: it reaches this many hops through your land, plus its level
+ * (a level-3 capital reaches 6). A border with a road counts as half a hop. */
+export const SUPPLY_REACH_BASE = 3;
+export const ROAD_SUPPLY_HOP = 0.5;
+/** Supply capacity of a region, by terrain, and how much a city in it adds per level. */
 export const SUPPLY_BASE = 30;
 export const SUPPLY_TERRAIN: Record<Terrain, number> = { plains: 1, forest: 0.9, hills: 0.8, mountains: 0.6 };
-export const SUPPLY_PER_INFRA = 20;
-export const SUPPLY_CITY = 1.5;
+export const SUPPLY_PER_CITY_LEVEL = 0.25;
 /** Out of supply: share of size lost per second, and training lost per second. */
 export const OUT_OF_SUPPLY_LOSS = 0.005;
 export const OUT_OF_SUPPLY_TRAINING = 0.2;
@@ -148,8 +147,8 @@ export const BROKE_TRAINING = 0.2;
 
 // -- stacking ---------------------------------------------------------------------------------
 
-/** Tokens one player may have standing in a region, by size and terrain, plus one per
- * infrastructure level. Units only passing through their own land don't count. */
+/** Tokens one player may have standing in a region, by size and terrain, plus one per fort
+ * level and per city level. Units only passing through their own land don't count. */
 export const STACK_SIZE: Record<RegionSize, number> = { small: 2, medium: 3, large: 4 };
 export const STACK_TERRAIN: Record<Terrain, number> = { plains: 0, forest: 0, hills: 0, mountains: -1 };
 export const STACK_MIN = 2;
@@ -158,7 +157,6 @@ export const STACK_MIN = 2;
 
 export const BASE_YIELD: Resources = { money: 0.25, manpower: 0.15, steel: 0, oil: 0 };
 export const TRAIT_YIELD: Record<Trait, Partial<Resources>> = {
-  city: { money: 1.5, manpower: 0.3 },
   industry: { steel: 1, money: 0.3 },
   oil: { oil: 0.8 },
   farmland: { manpower: 0.35 },
@@ -171,28 +169,103 @@ export const STARTING_MULTIPLIER: Record<StartingResources, number> = { low: 0.5
 // -- buildings --------------------------------------------------------------------------------
 
 export type ProductionBuilding = 'barracks' | 'factory';
-export type BuildingKind = ProductionBuilding | 'fort' | 'infra';
-export const BUILDING_KINDS: readonly BuildingKind[] = ['barracks', 'factory', 'fort', 'infra'];
-export const MAX_LEVEL: Record<BuildingKind, number> = { barracks: 1, factory: 1, fort: 3, infra: 3 };
+/** Economic buildings: each takes a slot and raises one resource. */
+export type EconKind = 'farm' | 'mine' | 'well' | 'market';
+export const ECON_KINDS: readonly EconKind[] = ['farm', 'mine', 'well', 'market'];
+/** 'city' founds a city, or expands one that's there; 'road' is built across a border. */
+export type BuildingKind = EconKind | 'city' | 'fort' | ProductionBuilding | 'road';
+export const BUILDING_KINDS: readonly BuildingKind[] = ['farm', 'mine', 'well', 'market', 'city', 'fort', 'barracks', 'factory', 'road'];
+export const MAX_FORT = 3;
+export const MAX_CITY = 5;
+/** Builds a region can have waiting behind the one under way. */
+export const BUILD_QUEUE = 3;
+/** Building slots of a region, by size; a city adds one per level. */
+export const SLOTS: Record<RegionSize, number> = { small: 1, medium: 2, large: 3 };
+/** Economic buildings only go this many hops from one of your cities. */
+export const HINTERLAND_HOPS = 2;
+/** A new city can't be founded closer than this many hops to another city. */
+export const FOUND_CITY_MIN_HOPS = 2;
+/** Crossing a border with a road takes this share of the time. */
+export const ROAD_SPEED = 0.6;
+/** What a city gives per level, every second (tax and manpower). */
+export const CITY_YIELD: Resources = { money: 0.6, manpower: 0.15, steel: 0, oil: 0 };
+/** Your capital starts at least this big; cities of countries nobody plays start at 1. */
+export const START_CAPITAL_LEVEL = 3;
+export const NEUTRAL_CITY_LEVEL = 1;
 
-/** Cost and build time of reaching `level` (1-based). */
-export function buildCost(kind: BuildingKind, level: number): { cost: Resources; seconds: number } {
+export function usesSlot(kind: BuildingKind): boolean {
+  return kind !== 'city' && kind !== 'road';
+}
+
+export function slotsOf(region: Region, city: number): number {
+  return SLOTS[region.size] + city;
+}
+
+/** What one economic building yields per second in a region. */
+export function econYield(kind: EconKind, region: Region): Partial<Resources> {
   switch (kind) {
-    case 'barracks':
-      return { cost: { money: 80, manpower: 0, steel: 0, oil: 0 }, seconds: 20 };
-    case 'factory':
-      return { cost: { money: 150, manpower: 0, steel: 40, oil: 0 }, seconds: 40 };
-    case 'fort':
-      return { cost: { money: 60 * level, manpower: 0, steel: 10 * level, oil: 0 }, seconds: 20 * level };
-    case 'infra':
-      return { cost: { money: 50 * level, manpower: 0, steel: 15 * level, oil: 0 }, seconds: 25 * level };
+    case 'farm':
+      return { manpower: 0.3 };
+    case 'mine':
+      return { steel: region.traits.includes('industry') ? 0.4 : 0.25 };
+    case 'well':
+      return { oil: 0.4 };
+    case 'market':
+      return { money: 0.4 };
   }
 }
 
-/** Where a building may go (region traits limit some). */
-export function canBuildOn(kind: BuildingKind, traits: readonly Trait[]): boolean {
-  if (kind === 'factory') return traits.includes('industry') || traits.includes('city');
-  return true;
+/** Where a building may go by the region alone (the sim also checks owner, slots, reach). */
+export function canBuildOn(kind: BuildingKind, region: Region, city: number): boolean {
+  const t = region.traits;
+  switch (kind) {
+    case 'farm':
+      return t.includes('farmland') || region.terrain === 'plains';
+    case 'mine':
+      return t.includes('industry') || region.terrain === 'hills' || region.terrain === 'mountains';
+    case 'well':
+      return t.includes('oil');
+    case 'barracks':
+    case 'factory':
+      return city > 0;
+    default:
+      return true;
+  }
+}
+
+/** Why `canBuildOn` says no, for the UI. */
+export const BUILD_NEEDS: Partial<Record<BuildingKind, string>> = {
+  farm: 'farmland or plains',
+  mine: 'industry, hills or mountains',
+  well: 'an oil field',
+  barracks: 'a city',
+  factory: 'a city',
+};
+
+const res = (money: number, steel = 0): Resources => ({ money, manpower: 0, steel, oil: 0 });
+
+/** Cost and build time. `level` is the level reached: fort 1-3; city 1 = found, 2-5 = expand. */
+export function buildCost(kind: BuildingKind, level = 1): { cost: Resources; seconds: number } {
+  switch (kind) {
+    case 'farm':
+      return { cost: res(60), seconds: 20 };
+    case 'mine':
+      return { cost: res(80), seconds: 25 };
+    case 'well':
+      return { cost: res(90, 10), seconds: 25 };
+    case 'market':
+      return { cost: res(70), seconds: 20 };
+    case 'city':
+      return level <= 1 ? { cost: res(400, 60), seconds: 90 } : { cost: res(120 * level, 20 * (level - 1)), seconds: 30 * level };
+    case 'fort':
+      return { cost: res(60 * level, 10 * level), seconds: 20 * level };
+    case 'barracks':
+      return { cost: res(80), seconds: 20 };
+    case 'factory':
+      return { cost: res(150, 40), seconds: 40 };
+    case 'road':
+      return { cost: res(30, 5), seconds: 10 };
+  }
 }
 
 // -- the start --------------------------------------------------------------------------------
@@ -246,13 +319,17 @@ export const PLAYER_COLORS = ['#c0504d', '#4f81bd', '#9bbb59', '#e0a33a', '#8064
 
 // -- per-region numbers -----------------------------------------------------------------------
 
-export function stackCap(region: Region, infra: number): number {
-  return Math.max(STACK_MIN, STACK_SIZE[region.size] + STACK_TERRAIN[region.terrain]) + infra;
+export function stackCap(region: Region, city: number, fort: number): number {
+  return Math.max(STACK_MIN, STACK_SIZE[region.size] + STACK_TERRAIN[region.terrain]) + city + fort;
 }
 
-export function supplyCapacity(region: Region, infra: number): number {
-  const base = (SUPPLY_BASE + SUPPLY_PER_INFRA * infra) * SUPPLY_TERRAIN[region.terrain];
-  return region.traits.includes('city') ? base * SUPPLY_CITY : base;
+export function supplyCapacity(region: Region, city: number): number {
+  return SUPPLY_BASE * SUPPLY_TERRAIN[region.terrain] * (1 + SUPPLY_PER_CITY_LEVEL * city);
+}
+
+/** How many hops a city of this level supplies. */
+export function supplyReach(city: number): number {
+  return SUPPLY_REACH_BASE + city;
 }
 
 /** Seconds to capture a region with blobs of the given (best) training. */

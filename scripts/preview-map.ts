@@ -22,5 +22,5 @@ for (const r of map.regions) for (const n of r.neighbors) if (n.river) {
   const o = map.regions[n.id];
   for (let t = 0; t <= 1; t += 0.02) { const x = Math.round(r.x + (o.x - r.x) * t), y = Math.round(r.y + (o.y - r.y) * t); img.data.set([0, 80, 255], (y * W + x) * 4); }
 }
-for (const r of map.regions) for (let d = -2; d <= 2; d++) for (let e = -2; e <= 2; e++) img.data.set(r.traits.includes('city') ? [255, 0, 0] : [255, 255, 255], ((r.y + d) * W + r.x + e) * 4);
+for (const r of map.regions) for (let d = -2; d <= 2; d++) for (let e = -2; e <= 2; e++) img.data.set(r.city ? [255, 0, 0] : [255, 255, 255], ((r.y + d) * W + r.x + e) * 4);
 writeFileSync(process.argv[3], PNG.sync.write(img));

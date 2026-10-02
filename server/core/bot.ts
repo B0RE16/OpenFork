@@ -9,6 +9,10 @@ import {
   BOT_PEACE_STALEMATE_SECONDS,
   BOT_PEACE_WHEN_WEAKER,
   type BotDifficulty,
+  type BuildingKind,
+  ECON_KINDS,
+  type EconKind,
+  MAX_CITY,
   OPPORTUNISM,
   type Opportunism,
   UNITS,
@@ -27,12 +31,22 @@ interface Style {
   merges: boolean;
   /** Money it keeps back before building. */
   reserve: number;
+  /** Chance per think that it develops its economy (when it can afford to). */
+  develop: number;
+  /** Picks the best site for economic buildings (else any that fits). */
+  smart: boolean;
+  /** Builds roads toward its borders. */
+  roads: boolean;
+  /** Money at which it founds a new city (Infinity: never). */
+  found: number;
+  /** Largest city level it expands to. */
+  cityCap: number;
 }
 
 const STYLES: Record<BotDifficulty, Style> = {
-  easy: { think: 3, odds: 2.2, forts: 1, tanks: false, merges: false, reserve: 150 },
-  normal: { think: 1.5, odds: 1.6, forts: 2, tanks: true, merges: true, reserve: 100 },
-  hard: { think: 0.6, odds: 1.25, forts: 3, tanks: true, merges: true, reserve: 60 },
+  easy: { think: 3, odds: 2.2, forts: 1, tanks: false, merges: false, reserve: 150, develop: 0.5, smart: false, roads: false, found: Infinity, cityCap: 3 },
+  normal: { think: 1.5, odds: 1.6, forts: 2, tanks: true, merges: true, reserve: 100, develop: 0.8, smart: true, roads: true, found: 700, cityCap: 4 },
+  hard: { think: 0.6, odds: 1.25, forts: 3, tanks: true, merges: true, reserve: 60, develop: 1, smart: true, roads: true, found: 500, cityCap: MAX_CITY },
 };
 
 export class Bot {
@@ -85,6 +99,17 @@ export class Bot {
     return sim.state.players.filter((p) => p.alive && sim.atWar(this.player, p.id)).map((p) => p.id);
   }
 
+  /** How developed a country is: city levels plus economic buildings. */
+  private wealth(sim: Sim, owner: number): number {
+    let w = 0;
+    for (const rs of sim.state.regions) {
+      if (rs.owner !== owner) continue;
+      w += rs.city;
+      for (const k of ECON_KINDS) w += rs.econ[k];
+    }
+    return w;
+  }
+
   /** Countries whose land touches ours. */
   private neighbours(sim: Sim): Set<number> {
     const out = new Set<number>();
@@ -131,9 +156,10 @@ export class Bot {
     if (!opp || now < opp.after || enemies.length >= opp.maxWars) return;
     const prey = [...this.neighbours(sim)]
       .filter((p) => !sim.atWar(this.player, p) && !sim.inTruce(this.player, p))
-      .map((p) => ({ p, s: this.strength(sim, p) }))
+      .map((p) => ({ p, s: this.strength(sim, p), w: this.wealth(sim, p) }))
       .filter((x) => mine >= x.s * opp.ratio)
-      .sort((a, b) => a.s - b.s)[0];
+      // Weak and rich is best: developed land is worth taking.
+      .sort((a, b) => a.s / (1 + a.w / 10) - b.s / (1 + b.w / 10))[0];
     if (prey && this.random() < opp.chance) sim.declareWar(this.player, prey.p);
   }
 
@@ -172,32 +198,109 @@ export class Bot {
       if (border && sim.build(this.player, border.r, 'fort') === null) return;
     }
 
-    // Factories once there's steel to use.
+    const cities = mine.filter((r) => regions[r].city > 0);
+    const can = (r: number, kind: BuildingKind, target = -1) => sim.whyNotBuild(this.player, r, kind, target) === null;
+
+    // Factories (in cities) once there's steel to use.
     const factories = mine.filter((r) => regions[r].factory).length;
     if (this.style.tanks && factories < 1 + Math.floor(mine.length / 30) && me.resources.steel >= 40) {
-      const site = mine.find((r) => {
-        const t = sim.world.regions[r].traits;
-        return regions[r].supplied && !regions[r].factory && !regions[r].construction && (t.includes('industry') || t.includes('city'));
-      });
+      const site = cities.find((r) => can(r, 'factory'));
       if (site !== undefined && sim.build(this.player, site, 'factory') === null) return;
     }
 
-    // More barracks as the country grows, close to the front.
+    // More barracks as the country grows, in the cities closest to the front.
     const barracks = mine.filter((r) => regions[r].barracks).length;
     if (barracks < 1 + Math.floor(mine.length / 12)) {
-      const site = mine
-        .filter((r) => regions[r].supplied && !regions[r].barracks && !regions[r].construction)
-        .sort((a, b) => this.frontDistance(sim, a) - this.frontDistance(sim, b))[0];
+      const site = cities.filter((r) => can(r, 'barracks')).sort((a, b) => this.frontDistance(sim, a) - this.frontDistance(sim, b))[0];
       if (site !== undefined && sim.build(this.player, site, 'barracks') === null) return;
     }
 
-    // Infrastructure where the army is short of supply.
-    const hungry = [...sim.state.blobs.values()].find(
-      (b) => b.owner === this.player && b.supply < 0.8 && b.supply > 0 && regions[b.region].owner === this.player,
-    );
-    if (hungry && regions[hungry.region].infra < 3 && !regions[hungry.region].construction) {
-      sim.build(this.player, hungry.region, 'infra');
+    if (this.random() >= this.style.develop) return;
+
+    // One development step per think, picked at random so everything gets its turn; if the
+    // pick can't happen, the others are tried in order.
+    const steps: Array<() => boolean> = [
+      () => {
+        const econ = this.econSite(sim, mine);
+        return !!econ && sim.build(this.player, econ.r, econ.kind) === null;
+      },
+      () => {
+        // Grow the cities, the capital first, then the biggest.
+        if (me.resources.money < this.style.reserve * 2) return false;
+        const grow = cities
+          .filter((r) => regions[r].city < this.style.cityCap && can(r, 'city'))
+          .sort((a, b) => Number(b === me.capital) - Number(a === me.capital) || regions[b].city - regions[a].city)[0];
+        return grow !== undefined && sim.build(this.player, grow, 'city') === null;
+      },
+      () => {
+        // Roads: grow the network out of the cities toward the borders.
+        if (!this.style.roads) return false;
+        const road = this.roadSite(sim, mine);
+        return !!road && sim.build(this.player, road[0], 'road', road[1]) === null;
+      },
+      () => {
+        // A new city where our land is far from the others.
+        if (me.resources.money < this.style.found || me.resources.steel < 60) return false;
+        const site = mine
+          .filter((r) => regions[r].city === 0 && can(r, 'city'))
+          .map((r) => ({ r, d: Math.min(...cities.map((c) => this.hops(sim, r, c))) }))
+          .sort((a, b) => b.d - a.d)[0];
+        return !!site && site.d >= 3 && sim.build(this.player, site.r, 'city') === null;
+      },
+    ];
+    const roll = this.random();
+    const first = roll < 0.45 ? 0 : roll < 0.7 ? 1 : roll < 0.9 ? 2 : 3;
+    for (let i = 0; i < steps.length; i++) if (steps[(first + i) % steps.length]()) return;
+  }
+
+  /** Where to put the next economic building, and which. */
+  private econSite(sim: Sim, mine: number[]): { r: number; kind: EconKind } | null {
+    const regions = sim.state.regions;
+    const me = sim.state.players[this.player];
+    // What we're short of decides the building where the land doesn't.
+    const wanted: EconKind = me.resources.manpower < 80 ? 'farm' : 'market';
+    const options: Array<{ r: number; kind: EconKind; score: number }> = [];
+    for (const r of mine) {
+      for (const kind of ECON_KINDS) {
+        if (sim.whyNotBuild(this.player, r, kind) !== null) continue;
+        const t = sim.world.regions[r].traits;
+        let score = this.random();
+        if (this.style.smart) {
+          if (kind === 'well') score += 3;
+          if (kind === 'mine' && t.includes('industry')) score += 2.5;
+          if (kind === 'farm' && t.includes('farmland')) score += 1.5;
+          if (kind === wanted) score += 1;
+          if (kind === 'mine' && !t.includes('industry')) score -= 0.5;
+          // Not right on a front line.
+          if (this.threat(sim, r) > 0) score -= 2;
+          if (regions[r].city > 0) score += 0.3;
+        }
+        options.push({ r, kind, score });
+      }
     }
+    options.sort((a, b) => b.score - a.score);
+    return options[0] ?? null;
+  }
+
+  /** A border to put a road on: next to a city or an existing road, heading for the front. */
+  private roadSite(sim: Sim, mine: number[]): [number, number] | null {
+    const regions = sim.state.regions;
+    const linked = (r: number) => regions[r].city > 0 || sim.world.neighbors(r).some((e) => sim.hasRoad(r, e.id));
+    let best: [number, number] | null = null;
+    let bestScore = Infinity;
+    for (const r of mine) {
+      if (!linked(r)) continue;
+      for (const e of sim.world.neighbors(r)) {
+        if (regions[e.id].owner !== this.player || sim.whyNotBuild(this.player, r, 'road', e.id) !== null) continue;
+        // Toward the nearest border (anywhere, at peace: then any direction will do).
+        const score = Math.min(20, this.frontDistance(sim, e.id)) + this.random() * 0.5;
+        if (score < bestScore) {
+          bestScore = score;
+          best = [r, e.id];
+        }
+      }
+    }
+    return best;
   }
 
   // -- the army -----------------------------------------------------------------------------

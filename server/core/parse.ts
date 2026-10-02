@@ -27,8 +27,12 @@ function order(v: unknown): Order | null {
     case 'merge':
       return isIds(v.blobs) ? { o: 'merge', blobs: v.blobs } : null;
     case 'build':
+      if (!isInt(v.region) || !BUILDING_KINDS.includes(v.kind as BuildingKind)) return null;
+      if (v.target !== undefined && !isInt(v.target)) return null;
+      return { o: 'build', region: v.region, kind: v.kind as BuildingKind, ...(v.target !== undefined ? { target: v.target as number } : {}) };
+    case 'demolish':
       return isInt(v.region) && BUILDING_KINDS.includes(v.kind as BuildingKind)
-        ? { o: 'build', region: v.region, kind: v.kind as BuildingKind }
+        ? { o: 'demolish', region: v.region, kind: v.kind as BuildingKind }
         : null;
     case 'produce':
       return isInt(v.region) && isProd(v.building) ? { o: 'produce', region: v.region, building: v.building } : null;
@@ -42,6 +46,8 @@ function order(v: unknown): Order | null {
       return isInt(v.player) ? { o: v.o, player: v.player } : null;
     case 'cancel':
       return isInt(v.region) && isProd(v.building) ? { o: 'cancel', region: v.region, building: v.building } : null;
+    case 'unbuild':
+      return isInt(v.region) && isInt(v.index) && v.index >= 0 ? { o: 'unbuild', region: v.region, index: v.index } : null;
     default:
       return null;
   }
