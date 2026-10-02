@@ -3,8 +3,9 @@
 import { decodeGrid, type GameMap, WATER } from '../shared/map.ts';
 import type { BlobRow, GamePlayer, Snapshot } from '../shared/protocol.ts';
 import { UNIT_INDEX } from '../shared/protocol.ts';
-import { type BuildingKind, ROAD_SUPPLY_HOP, supplyCapacity, supplyReach, UNITS } from '../shared/rules.ts';
-import { blit, blitCentred, FRAME_H, FRAME_W, ICONS, INK, MAP_ART, pixelDigits, ROAD_COLOR, ROAD_SHADE, type Sprite, unitFrame } from './sprites.ts';
+import { BUILDING_KINDS, type BuildingKind, ROAD_SUPPLY_HOP, supplyCapacity, supplyReach, UNITS } from '../shared/rules.ts';
+import { Fx } from './fx.ts';
+import { blit, blitCentred, FRAME_H, FRAME_W, ICONS, INK, MAP_ART, pixelDigits, ROAD_COLOR, ROAD_SHADE, shade, type Sprite, unitFrame } from './sprites.ts';
 
 export interface Camera {
   x: number;
@@ -61,6 +62,9 @@ export class MapView {
   private readonly shownOwner: Int16Array;
   private readonly shownCut: Uint8Array;
   private territoryImg: ImageData | null = null;
+  private territoryRgb: Array<[number, number, number]> | null = null;
+  /** Captures being swept in: pixel order (nearest the taker first) and how far it got. */
+  private readonly sweeps = new Map<number, { order: Int32Array; done: number; start: number }>();
   private territorySnap: Snapshot | null = null;
   private highlighted = -2;
   cam: Camera = { x: 0, y: 0, scale: 1 };
@@ -81,6 +85,19 @@ export class MapView {
     move: { ids: number[]; to: number; since: number } | null;
     builds: Array<{ region: number; kind: BuildingKind; since: number }>;
   } = { move: null, builds: [] };
+  /** Effects under the tokens (smoke, flashes, dust) and over them (loss numbers). */
+  readonly fx = new Fx();
+  readonly fxTop = new Fx();
+  /** Hooks for sound, set by the game screen. */
+  sounds: { gun(volume: number): void; boom(volume: number): void } | null = null;
+  /** Hops: where each unit was last drawn and in which region, and glides under way. */
+  private lastDrawn = new Map<number, [number, number]>();
+  private lastRegion = new Map<number, number>();
+  private readonly glides = new Map<number, { x: number; y: number; start: number }>();
+  /** Units hit recently (shake until), and losses not shown yet. */
+  private readonly shaking = new Map<number, number>();
+  private readonly lossAcc = new Map<number, number>();
+  private frameAt = performance.now();
   /** Road tool: the regions dragged across so far, drawn as a dashed line. */
   roadPreview: number[] | null = null;
   private readonly placeLayer: HTMLCanvasElement;
@@ -276,51 +293,140 @@ export class MapView {
 
   // -- state --------------------------------------------------------------------------------
 
-  /** Repaints the territory tint for regions that changed hands or supply (only those). */
+  /** Repaints the territory tint for regions that changed hands or supply (only those). A
+   * region that changed hands fills with its new colour from the attacked border instead. */
   private updateTerritory(snap: Snapshot, players: GamePlayer[]): void {
     if (snap === this.territorySnap) return;
     this.territorySnap = snap;
+    this.territoryRgb ??= players.map((p) => hexRgb(p.color));
     const regions = snap.regions;
     const dirty: number[] = [];
+    const now = performance.now();
     for (let r = 0; r < regions.length; r++) {
+      const owner = regions[r][0];
       const cut = regions[r][3] & 4 ? 0 : 1;
-      if (regions[r][0] !== this.shownOwner[r] || cut !== this.shownCut[r]) {
-        dirty.push(r);
-        this.shownOwner[r] = regions[r][0];
-        this.shownCut[r] = cut;
+      const was = this.shownOwner[r];
+      if (owner === was && cut === this.shownCut[r]) continue;
+      this.shownOwner[r] = owner;
+      this.shownCut[r] = cut;
+      if (owner !== was && was !== -3 && owner >= 0) {
+        // Taken: sweep the new colour across from the border with the taker's land.
+        this.sweeps.set(r, { order: this.sweepOrder(r, owner, snap), done: 0, start: now });
+        continue;
+      }
+      if (this.sweeps.has(r)) continue; // repainted whole when its sweep ends
+      dirty.push(r);
+    }
+    if (dirty.length) this.repaintRegions(dirty);
+  }
+
+  /** The order a captured region's pixels change colour in: nearest the taker's land first. */
+  private sweepOrder(r: number, owner: number, snap: Snapshot): Int32Array {
+    const W = this.map.width;
+    const pix = this.regionPixels[r];
+    const dist = new Map<number, number>();
+    const queue: number[] = [];
+    for (const i of pix) {
+      const x = i % W;
+      for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W]) {
+        if (j < 0 || j >= this.grid.length) continue;
+        const o = this.grid[j];
+        if (o !== WATER && o !== r && snap.regions[o][0] === owner) {
+          dist.set(i, 0);
+          queue.push(i);
+          break;
+        }
       }
     }
-    if (!dirty.length) return;
+    if (!queue.length) {
+      // No land of theirs next to it: from the middle.
+      const reg = this.map.regions[r];
+      let best = pix[0];
+      let bestD = Infinity;
+      for (const i of pix) {
+        const d = Math.abs((i % W) - reg.x) + Math.abs(Math.floor(i / W) - reg.y);
+        if (d < bestD) [best, bestD] = [i, d];
+      }
+      dist.set(best, 0);
+      queue.push(best);
+    }
+    for (let q = 0; q < queue.length; q++) {
+      const i = queue[q];
+      const x = i % W;
+      for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W]) {
+        if (j < 0 || j >= this.grid.length || this.grid[j] !== r || dist.has(j)) continue;
+        dist.set(j, (dist.get(i) as number) + 1);
+        queue.push(j);
+      }
+    }
+    return Int32Array.from(queue);
+  }
+
+  /** Captures in progress: more of the region takes the new colour each frame (~1 s). */
+  private animateSweeps(now: number): void {
+    if (!this.sweeps.size || !this.territorySnap || !this.territoryImg) return;
+    const ctx = this.territory.getContext('2d') as CanvasRenderingContext2D;
+    for (const [r, sw] of [...this.sweeps]) {
+      const t = Math.min(1, (now - sw.start) / SWEEP_MS);
+      const upto = Math.floor(sw.order.length * (1 - (1 - t) ** 2));
+      for (let k = sw.done; k < upto; k++) this.fillPixel(sw.order[k]);
+      sw.done = upto;
+      const o = r * 4;
+      const box = this.regionBox;
+      if (t >= 1) {
+        this.sweeps.delete(r);
+        this.repaintRegions([r]);
+        // A bright edge around the region as it settles.
+        const W = this.map.width;
+        for (const k of this.regionEdges[r]) {
+          if (Math.random() > 0.25) continue;
+          const i = this.edges[k];
+          this.fx.add({ kind: 'spark', x: i % W, y: Math.floor(i / W), vx: 0, vy: 0, life: 450, size: 1, color: '#ffffff' });
+        }
+      } else {
+        ctx.putImageData(this.territoryImg, 0, 0, box[o], box[o + 1], box[o + 2] - box[o] + 1, box[o + 3] - box[o + 1] + 1);
+      }
+    }
+  }
+
+  /** One pixel of the territory tint, from the latest snapshot. */
+  private fillPixel(i: number): void {
+    const d = (this.territoryImg as ImageData).data;
+    const regions = (this.territorySnap as Snapshot).regions;
+    const W = this.map.width;
+    const r = this.grid[i];
+    const o = i * 4;
+    const owner = regions[r][0];
+    if (owner < 0) {
+      d[o + 3] = 0;
+      return;
+    }
+    const c = (this.territoryRgb as Array<[number, number, number]>)[owner];
+    const x = i % W;
+    const y = (i - x) / W;
+    // Out of supply: paler, with dark diagonal hatching.
+    const cut = !(regions[r][3] & 4);
+    if (cut && (x + y) % 6 === 0) {
+      d[o] = c[0] * 0.35;
+      d[o + 1] = c[1] * 0.35;
+      d[o + 2] = c[2] * 0.35;
+      d[o + 3] = 170;
+      return;
+    }
+    d[o] = c[0];
+    d[o + 1] = c[1];
+    d[o + 2] = c[2];
+    d[o + 3] = cut ? 55 : 100;
+  }
+
+  /** Repaints whole regions (and the borders they touch) at once. */
+  private repaintRegions(dirty: number[]): void {
     const W = this.map.width;
     const ctx = this.territory.getContext('2d') as CanvasRenderingContext2D;
     this.territoryImg ??= ctx.createImageData(W, this.map.height);
     const d = this.territoryImg.data;
-    const rgb = players.map((p) => hexRgb(p.color));
-    const fillPixel = (i: number) => {
-      const r = this.grid[i];
-      const o = i * 4;
-      const owner = regions[r][0];
-      if (owner < 0) {
-        d[o + 3] = 0;
-        return;
-      }
-      const c = rgb[owner];
-      const x = i % W;
-      const y = (i - x) / W;
-      // Out of supply: paler, with dark diagonal hatching.
-      const cut = !(regions[r][3] & 4);
-      if (cut && (x + y) % 6 === 0) {
-        d[o] = c[0] * 0.35;
-        d[o + 1] = c[1] * 0.35;
-        d[o + 2] = c[2] * 0.35;
-        d[o + 3] = 170;
-        return;
-      }
-      d[o] = c[0];
-      d[o + 1] = c[1];
-      d[o + 2] = c[2];
-      d[o + 3] = cut ? 55 : 100;
-    };
+    const regions = (this.territorySnap as Snapshot).regions;
+    const rgb = this.territoryRgb as Array<[number, number, number]>;
     let [x0, y0, x1, y1] = [W, this.map.height, -1, -1];
     const grow = (r: number) => {
       const o = r * 4;
@@ -330,7 +436,7 @@ export class MapView {
       y1 = Math.max(y1, this.regionBox[o + 3]);
     };
     for (const r of dirty) {
-      for (const i of this.regionPixels[r]) fillPixel(i);
+      for (const i of this.regionPixels[r]) this.fillPixel(i);
       grow(r);
     }
     // Borders: on both sides of every border a changed region touches.
@@ -339,7 +445,7 @@ export class MapView {
         const i = this.edges[k];
         const own = this.grid[i];
         if (own !== r) grow(own);
-        fillPixel(i);
+        this.fillPixel(i);
         const other = this.edgeOther[k];
         const owner = regions[own][0];
         const otherOwner = other === WATER ? -2 : regions[other][0];
@@ -553,6 +659,157 @@ export class MapView {
     });
   }
 
+  /** Where a building of this kind in this region stands (or will), in map pixels. */
+  private siteOf(region: number, kind: BuildingKind, row: Snapshot['regions'][number], done: boolean): [number, number] {
+    const r = this.map.regions[region];
+    if (kind === 'farm' || kind === 'mine' || kind === 'well' || kind === 'market') {
+      const n = row[9] + row[10] + row[11] + row[12] - (done ? 1 : 0);
+      const spot = this.spotsIn(region)[Math.max(0, n)];
+      if (spot) return [spot[0] + 1, spot[1]];
+    }
+    if (kind === 'city') {
+      const [tx, ty] = this.townAt(region);
+      return [tx + 7, ty - 4];
+    }
+    return [r.x + 9, r.y + 3];
+  }
+
+  /** Construction sites: scaffolding where the building goes, the crane swinging. */
+  private drawSites(snap: Snapshot): void {
+    const ctx = this.ctx;
+    const [mx0, my0] = this.toMap(-40, -40);
+    const [mx1, my1] = this.toMap(this.canvas.clientWidth + 40, this.canvas.clientHeight + 40);
+    const frame = Math.floor(performance.now() / 500) % 2;
+    snap.regions.forEach((row, i) => {
+      if (row[6] < 0) return;
+      const r = this.map.regions[i];
+      if (r.x < mx0 || r.x > mx1 || r.y < my0 || r.y > my1) return;
+      const [x, y] = this.siteOf(i, BUILDING_KINDS[row[6]], row, false);
+      ctx.drawImage(MAP_ART.scaffold[frame], x - 3, y - 4);
+    });
+  }
+
+  /** Sea pixels that glint (x, y, phase), picked once from the terrain picture. */
+  private glints: Float32Array | null = null;
+  private clouds: Array<{ sprite: HTMLCanvasElement; x: number; y: number }> = [];
+  private ambientAt = performance.now();
+
+  private initAmbient(): void {
+    const W = this.map.width;
+    const H = this.map.height;
+    const c = offscreen(W, H);
+    const cx = c.getContext('2d') as CanvasRenderingContext2D;
+    cx.drawImage(this.terrain, 0, 0);
+    const img = cx.getImageData(0, 0, W, H).data;
+    const pts: number[] = [];
+    for (let tries = 0; pts.length < 700 * 3 && tries < 200000; tries++) {
+      const i = Math.floor(Math.random() * W * H);
+      const [r, g, b] = [img[i * 4], img[i * 4 + 1], img[i * 4 + 2]];
+      if (this.grid[i] === WATER && b > r + 25 && b > g) pts.push(i % W, Math.floor(i / W), Math.random() * Math.PI * 2);
+    }
+    this.glints = Float32Array.from(pts);
+    // Soft, dithered cloud shadows, a few across the map.
+    for (let k = 0; k < 6; k++) {
+      const w = 90 + Math.floor(Math.random() * 70);
+      const h = 34 + Math.floor(Math.random() * 20);
+      const sprite = offscreen(w, h);
+      const sx = sprite.getContext('2d') as CanvasRenderingContext2D;
+      sx.fillStyle = '#0b0f13';
+      const blobs = Array.from({ length: 5 }, () => [w * (0.2 + Math.random() * 0.6), h * (0.3 + Math.random() * 0.4), h * (0.25 + Math.random() * 0.25)]);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if ((x + y) % 2) continue;
+          if (blobs.some(([bx, by, br]) => (x - bx) ** 2 / 1.8 + (y - by) ** 2 < br * br)) sx.fillRect(x, y, 1, 1);
+        }
+      }
+      this.clouds.push({ sprite, x: Math.random() * W, y: Math.random() * H });
+    }
+  }
+
+  /** The living map: glinting water, cloud shadows, traffic on roads, smoke from chimneys. */
+  private drawAmbient(snap: Snapshot): void {
+    if (!this.glints) this.initAmbient();
+    const ctx = this.ctx;
+    const now = performance.now();
+    const dt = Math.min(100, now - this.ambientAt) / 1000;
+    this.ambientAt = now;
+    const [mx0, my0] = this.toMap(0, 0);
+    const [mx1, my1] = this.toMap(this.canvas.clientWidth, this.canvas.clientHeight);
+    const seen = (x: number, y: number, m = 0) => x >= mx0 - m && x <= mx1 + m && y >= my0 - m && y <= my1 + m;
+
+    // Water: a few pixels catch the light now and then.
+    const g = this.glints as Float32Array;
+    ctx.fillStyle = '#d6ecff';
+    for (let k = 0; k < g.length; k += 3) {
+      if (!seen(g[k], g[k + 1])) continue;
+      const a = Math.sin(now / 700 + g[k + 2]);
+      if (a < 0.6) continue;
+      ctx.globalAlpha = (a - 0.6) * 1.6;
+      ctx.fillRect(g[k], g[k + 1], 1, 1);
+    }
+
+    // Cloud shadows drifting east.
+    const W = this.map.width;
+    ctx.globalAlpha = 0.13;
+    for (const c of this.clouds) {
+      const x = ((c.x + now / 1000) % (W + 300)) - 150;
+      if (seen(x + c.sprite.width / 2, c.y + c.sprite.height / 2, 120)) ctx.drawImage(c.sprite, Math.round(x), Math.round(c.y));
+    }
+    ctx.globalAlpha = 1;
+
+    // Traffic: little carts shuttling along supplied roads.
+    for (const [a, b] of snap.roads) {
+      if (!(snap.regions[a][3] & 4) || !(snap.regions[b][3] & 4)) continue;
+      const [x0, y0] = this.townAt(a);
+      const [x1, y1] = this.townAt(b);
+      if (!seen((x0 + x1) / 2, (y0 + y1) / 2, 60)) continue;
+      const len = Math.hypot(x1 - x0, y1 - y0);
+      const carts = snap.regions[a][2] > 0 && snap.regions[b][2] > 0 ? 3 : 1 + ((a + b) % 2);
+      for (let k = 0; k < carts; k++) {
+        const t = ((now / 1000) * (5 / len) + k / carts + (a * 0.37 + b * 0.11)) % 2;
+        const f = t < 1 ? t : 2 - t;
+        const x = Math.round(x0 + (x1 - x0) * f);
+        const y = Math.round(y0 + (y1 - y0) * f);
+        if (this.landOf(x, y) === WATER) continue;
+        ctx.fillStyle = '#2f2a24';
+        ctx.fillRect(x - 1, y - 1, 2, 1);
+        ctx.fillStyle = k % 2 ? '#d9a441' : '#e8e1d0';
+        ctx.fillRect(x, y - 1, 1, 1);
+      }
+    }
+
+    // Chimneys: factories, mines and towns smoke a little.
+    const smoke = (x: number, y: number, rate: number) => {
+      if (Math.random() < dt * rate) this.fx.add({ kind: 'puff', x, y, vx: 1.5, vy: -4, life: 2600, size: 2, color: '#d0d4d6', ambient: true });
+    };
+    snap.regions.forEach((row, i) => {
+      const r = this.map.regions[i];
+      if (!seen(r.x, r.y, 40)) return;
+      if (row[3] & 2) smoke(r.x + 6, r.y - 2, 0.8);
+      if (row[2] >= 2) {
+        const [tx, ty] = this.townAt(i);
+        smoke(tx, ty - 2, 0.25 * row[2]);
+      }
+      if (row[10] > 0) {
+        const spots = this.spotsIn(i);
+        const n = row[9];
+        for (let k = 0; k < row[10]; k++) {
+          const spot = spots[n + k];
+          if (spot) smoke(spot[0] + 2, spot[1] - 1, 0.5);
+        }
+      }
+    });
+  }
+
+  /** A building finished: a flash and a puff of dust where it stands. */
+  built(region: number, kind: BuildingKind, row: Snapshot['regions'][number]): void {
+    const [x, y] = this.siteOf(region, kind, row, true);
+    this.fx.add({ kind: 'flash', x: x + 2, y: y - 1, vx: 0, vy: 0, life: 350, size: 6, color: '#ffffff' });
+    for (let k = 0; k < 6; k++) {
+      this.fx.add({ kind: 'dust', x: x + Math.random() * 5, y: y + 2, vx: (Math.random() - 0.5) * 8, vy: -2 - Math.random() * 3, life: 700, size: 1, color: '#c8b892' });
+    }
+  }
+
   /** Placement: valid regions tinted green, everything else dimmed (changed regions only). */
   private updatePlaceLayer(valid: Set<number>): void {
     const W = this.map.width;
@@ -623,6 +880,7 @@ export class MapView {
     const h = this.canvas.clientHeight;
     this.clampCamera(w, h);
     this.updateTerritory(snap, players);
+    this.animateSweeps(performance.now());
     const place = this.placement;
     const lit = place ? (place.valid.has(place.hover) ? place.hover : -1) : selectedRegion;
     this.updateHighlight(lit);
@@ -646,6 +904,8 @@ export class MapView {
     ctx.imageSmoothingEnabled = this.cam.scale < 1;
     ctx.drawImage(this.developLayer, 0, 0);
     ctx.imageSmoothingEnabled = false;
+    this.drawSites(snap);
+    if (this.fx.level === 'full') this.drawAmbient(snap);
     if (showSupply) ctx.drawImage(this.supplyLayer, 0, 0);
     if (place) {
       this.updatePlaceLayer(place.valid);
@@ -849,6 +1109,36 @@ export class MapView {
     // The expanded stack goes on top.
     items.sort((a, b) => Number(a.pinned ?? false) - Number(b.pinned ?? false));
 
+    // Hops: a unit that just entered the next region glides there quickly from where it was.
+    for (const it of items) {
+      let glide: { x: number; y: number; start: number } | undefined;
+      for (const b of it.rows) {
+        const was = this.lastRegion.get(b[0]);
+        const from = this.lastDrawn.get(b[0]);
+        if (was !== undefined && was !== b[6] && from) this.glides.set(b[0], { x: from[0], y: from[1], start: now });
+        glide ??= this.glides.get(b[0]);
+      }
+      if (!glide) continue;
+      const t = (now - glide.start) / GLIDE_MS;
+      if (t >= 1) {
+        for (const b of it.rows) this.glides.delete(b[0]);
+        // Landing: a little dust.
+        const foot = (FRAME_H * px) / 2 / scale;
+        for (let i = 0; i < 4; i++) {
+          this.fx.add({ kind: 'dust', x: it.tx + (Math.random() - 0.5) * (FRAME_W * px) / scale, y: it.ty + foot, vx: (Math.random() - 0.5) * 6, vy: -2, life: 450, size: 1, color: '#b8a98a' });
+        }
+        continue;
+      }
+      const e = 1 - (1 - t) ** 3;
+      it.tx = glide.x + (it.tx - glide.x) * e;
+      it.ty = glide.y + (it.ty - glide.y) * e;
+    }
+    this.lastRegion = new Map(snap.blobs.map((b) => [b[0], b[6]]));
+    const drawn = new Map<number, [number, number]>();
+    for (const it of items) for (const b of it.rows) drawn.set(b[0], [it.tx, it.ty]);
+    this.lastDrawn = drawn;
+    const phase = now / 60;
+
     // Routes (yours) and next-hop arrows (everyone else's), under the tokens.
     const routes = new Map(snap.routes.map((r) => [r[0], r.slice(1)]));
     /** Destination region → heading there with a selected unit. */
@@ -872,7 +1162,7 @@ export class MapView {
           for (const r of route) {
             const reg = this.map.regions[r];
             const [bx, by] = this.toScreen(reg.x, reg.y);
-            dottedLine(ctx, ax, ay, bx, by + 14, color, px);
+            dottedLine(ctx, ax, ay, bx, by + 14, color, px, phase);
             [ax, ay] = [bx, by + 14];
           }
           ctx.globalAlpha = 1;
@@ -900,16 +1190,134 @@ export class MapView {
       blitCentred(ctx, ICONS.swords[blink], Math.round(x), Math.round(y), px);
     }
 
+    this.battleEffects(snap, items, now, px);
+    const toScreen = (x: number, y: number) => this.toScreen(x, y);
+    this.fx.draw(ctx, toScreen, px, now);
+
     // Tokens and stacks.
     const placed: Placed[] = [];
     const r = (FRAME_W * px) / 2;
     for (const it of items) {
       const [x, y] = this.toScreen(it.tx, it.ty);
-      const p = { ids: it.rows.map((b) => b[0]), x: Math.round(x), y: Math.round(y), r, group: it.group, stack: it.rows.length > 1 };
-      this.drawItem(it, p, players, it.rows.some((b) => selected.has(b[0])), px);
+      // Just took losses: a short shake.
+      const shake = it.rows.some((b) => (this.shaking.get(b[0]) ?? 0) > now) ? (Math.floor(now / 40) % 2 ? px : -px) : 0;
+      const p = { ids: it.rows.map((b) => b[0]), x: Math.round(x) + shake, y: Math.round(y), r, group: it.group, stack: it.rows.length > 1 };
+      this.drawItem(it, p, players, it.rows.some((b) => selected.has(b[0])), px, now);
       placed.push(p);
     }
     this.placed = placed;
+    this.fxTop.draw(ctx, toScreen, px, now);
+  }
+
+  /** When each fight on screen fires its next artillery round. */
+  private readonly nextBoom = new Map<number, number>();
+
+  /** Fights on screen: a pulsing red ring, tracers, muzzle flashes, smoke and artillery. */
+  private battleEffects(snap: Snapshot, items: Item[], now: number, px: number): void {
+    const dt = Math.min(100, now - this.frameAt) / 1000;
+    this.frameAt = now;
+    const ctx = this.ctx;
+    const scale = this.cam.scale;
+    const atWar = (a: number, b: number) => snap.wars.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
+    const byRegion = new Map<number, Item[]>();
+    for (const it of items) {
+      if (it.moving) continue;
+      const r = it.rows[0][6];
+      byRegion.set(r, [...(byRegion.get(r) ?? []), it]);
+    }
+    const W = this.map.width;
+    const cw = this.canvas.clientWidth;
+    const chh = this.canvas.clientHeight;
+    const rand = <T>(list: T[]) => list[Math.floor(Math.random() * list.length)];
+    let fights = 0;
+    for (const [r, list] of byRegion) {
+      const owners = [...new Set(list.map((it) => it.owner))];
+      const pairs: Array<[Item, Item]> = [];
+      for (const a of list) for (const b of list) if (a.owner < b.owner && atWar(a.owner, b.owner)) pairs.push([a, b]);
+      if (!pairs.length || owners.length < 2) continue;
+      const pts = list.map((it) => this.toScreen(it.tx, it.ty));
+      const minX = Math.min(...pts.map((p) => p[0]));
+      const maxX = Math.max(...pts.map((p) => p[0]));
+      const cy = pts.reduce((sum, p) => sum + p[1], 0) / pts.length;
+      const cx = (minX + maxX) / 2;
+      if (cx < -80 || cy < -80 || cx > cw + 80 || cy > chh + 80) continue;
+      fights++;
+
+      // The command layer: a red ring pulsing out around the fight.
+      const pulse = (now % 1200) / 1200;
+      const rx = (maxX - minX) / 2 + 16 * px + pulse * 6 * px;
+      const ry = 14 * px + pulse * 4 * px;
+      ctx.globalAlpha = 0.2 + 0.55 * (1 - pulse);
+      ctx.fillStyle = '#ff5a5a';
+      const n = Math.max(28, Math.round((rx + ry) / (1.5 * px)));
+      for (let k = 0; k < n; k++) {
+        const a = (k / n) * Math.PI * 2;
+        ctx.fillRect(Math.round(cx + Math.cos(a) * rx), Math.round(cy + Math.sin(a) * ry), px, px);
+      }
+      ctx.globalAlpha = 1;
+
+      // Tracers between the sides, muzzle flashes and gun smoke.
+      if (Math.random() < dt / 0.25) {
+        const [a, b] = rand(pairs);
+        const [from, to] = Math.random() < 0.5 ? [a, b] : [b, a];
+        this.fx.add({ kind: 'tracer', x: from.tx, y: from.ty, x2: to.tx, y2: to.ty, vx: 0, vy: 0, life: 260, size: 1, color: '#fff1a8' });
+      }
+      if (Math.random() < dt * 8 && this.fx.allow()) {
+        const it = rand(list);
+        const jx = ((Math.random() - 0.5) * FRAME_W * px * 1.6) / scale;
+        const jy = ((Math.random() - 0.5) * FRAME_H * px) / scale;
+        this.fx.add({ kind: 'spark', x: it.tx + jx, y: it.ty + jy, vx: 0, vy: 0, life: 110, size: 1, color: Math.random() < 0.5 ? '#fff3a0' : '#ffffff' });
+      }
+      if (Math.random() < dt * 1.5 && this.fx.allow()) {
+        const it = rand(list);
+        this.fx.add({ kind: 'smoke', x: it.tx + ((Math.random() - 0.5) * 20 * px) / scale, y: it.ty - (6 * px) / scale, vx: 2, vy: -5, life: 1700, size: 2, color: '#9aa0a4' });
+      }
+      // Artillery: now and then a shell lands somewhere in the region.
+      const due = this.nextBoom.get(r) ?? now + 600 + Math.random() * 1800;
+      if (now >= due) {
+        const pix = this.regionPixels[r];
+        const i = pix[Math.floor(Math.random() * pix.length)];
+        const x = i % W;
+        const y = (i - x) / W;
+        this.fx.add({ kind: 'boom', x, y, vx: 0, vy: 0, life: 520, size: 4, color: '#ff9a3c' });
+        for (let k = 0; k < 3; k++) {
+          this.fx.add({ kind: 'smoke', x: x + (Math.random() - 0.5) * 2, y, vx: 1 + Math.random() * 2, vy: -3 - Math.random() * 3, born: now + 120 + k * 90, life: 1900, size: 3, color: '#5a5f63' });
+        }
+        this.sounds?.boom(Math.min(1, scale / 2));
+        this.nextBoom.set(r, now + 2000 + Math.random() * 2000);
+      } else this.nextBoom.set(r, due);
+    }
+    // Small-arms fire for the fights on screen, a few crackles a second at most.
+    if (fights && Math.random() < dt * Math.min(6, 2 * fights)) this.sounds?.gun(Math.min(1, 0.35 + 0.1 * fights) * Math.min(1, scale / 1.5));
+  }
+
+  /** Losses since the last snapshot: shake the unit, and float a red number once they add up. */
+  noteLosses(prev: Snapshot, next: Snapshot): void {
+    const before = new Map(prev.blobs.map((b) => [b[0], b[3]]));
+    const fighting = new Set<number>();
+    const owners = new Map<number, Set<number>>();
+    for (const b of next.blobs) if (b[8] === 0) owners.set(b[6], (owners.get(b[6]) ?? new Set()).add(b[1]));
+    for (const [r, o] of owners) if (o.size > 1) fighting.add(r);
+    const now = performance.now();
+    const px = this.pixel();
+    for (const b of next.blobs) {
+      const was = before.get(b[0]);
+      if (was === undefined || !fighting.has(b[6])) continue;
+      const lost = was - b[3];
+      if (lost <= 0) continue;
+      const acc = (this.lossAcc.get(b[0]) ?? 0) + lost;
+      this.shaking.set(b[0], now + 300);
+      if (acc < 1) {
+        this.lossAcc.set(b[0], acc);
+        continue;
+      }
+      this.lossAcc.set(b[0], acc - Math.floor(acc));
+      const at = this.lastDrawn.get(b[0]);
+      if (!at) continue;
+      const up = ((FRAME_H * px) / 2 + 6 * px) / this.cam.scale;
+      this.fxTop.add({ kind: 'number', text: `-${Math.floor(acc)}`, x: at[0] + (Math.random() - 0.5) * 6 / this.cam.scale, y: at[1] - up, vx: 0, vy: -14 / this.cam.scale, life: 1100, size: 1, color: '#ff5a5a' });
+    }
+    for (const id of [...this.lossAcc.keys()]) if (!next.blobs.some((b) => b[0] === id)) this.lossAcc.delete(id);
   }
 
   /**
@@ -1043,7 +1451,7 @@ export class MapView {
    * (with a "deck" of frames behind for a stack), a strength bar, the strength number and,
    * for a stack, how many units are in it.
    */
-  private drawItem(it: Item, p: Placed, players: GamePlayer[], selected: boolean, px: number): void {
+  private drawItem(it: Item, p: Placed, players: GamePlayer[], selected: boolean, px: number, now: number): void {
     const ctx = this.ctx;
     const rows = it.rows;
     const color = colorOf(players, rows[0][1]);
@@ -1052,7 +1460,9 @@ export class MapView {
     const x0 = Math.round(p.x - w / 2);
     const y0 = Math.round(p.y - h / 2);
     // Everything but the live bits comes from a cached bitmap: one drawImage per token.
-    const token = tokenSprite(rows, color, px);
+    // Idle motion: the pennant flutters (and a supply warning blinks) on each unit's own beat.
+    const beat = Math.floor((now + rows[0][0] * 137) / 700) % 2;
+    const token = tokenSprite(rows, color, px, beat);
     ctx.drawImage(token, p.x - TOKEN_AX * px, p.y - TOKEN_AY * px);
     // On the move: a bar of 5 cells left of the frame fills up until the hop to the next region.
     if (it.moving) {
@@ -1073,6 +1483,11 @@ export class MapView {
   }
 }
 
+/** A hop's quick glide into the next region. */
+const GLIDE_MS = 300;
+/** A captured region filling with its new colour. */
+const SWEEP_MS = 1000;
+
 /** Token bitmaps: the anchor (the token's centre) sits at (TOKEN_AX, TOKEN_AY) × px. */
 const TOKEN_AX = 40;
 const TOKEN_AY = 24;
@@ -1083,7 +1498,7 @@ const tokenCache = new Map<string, HTMLCanvasElement>();
  * the framed branch symbol, a strength bar, the strength number, the ×N count for a stack,
  * the supply mark and training chevrons.
  */
-function tokenSprite(rows: BlobRow[], color: string, px: number): HTMLCanvasElement {
+function tokenSprite(rows: BlobRow[], color: string, px: number, beat: number): HTMLCanvasElement {
   const byType = new Map<string, number>();
   for (const b of rows) byType.set(UNIT_INDEX[b[2]], (byType.get(UNIT_INDEX[b[2]]) ?? 0) + b[3]);
   const type = ([...byType].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'infantry') as 'infantry' | 'tank';
@@ -1098,7 +1513,7 @@ function tokenSprite(rows: BlobRow[], color: string, px: number): HTMLCanvasElem
   const chevrons = Math.floor(training / 34);
   const deck = rows.slice(1, 3).map((b) => `${b[2]}.${b[4]}`).join(',');
   const label = String(Math.ceil(strength));
-  const key = `${type}|${rows[0][4]}|${deck}|${color}|${label}|${rows.length}|${supplyMark}|${chevrons}|${cellsOn}${barColor}|${px}`;
+  const key = `${type}|${rows[0][4]}|${deck}|${color}|${label}|${rows.length}|${supplyMark}|${chevrons}|${cellsOn}${barColor}|${px}|${beat}`;
   let c = tokenCache.get(key);
   if (c) return c;
   if (tokenCache.size > 1500) tokenCache.clear();
@@ -1139,12 +1554,22 @@ function tokenSprite(rows: BlobRow[], color: string, px: number): HTMLCanvasElem
     countBadge(ctx, rows.length, bx, bcy, px);
   }
 
-  // Supply: amber/red block in the top-right corner of the frame.
+  // Supply: amber/red block in the top-right corner of the frame (blinking).
   if (supplyMark) {
     ctx.fillStyle = INK;
     ctx.fillRect(x0 + w - 4 * px, y0 + 3 * px, 4 * px, 4 * px);
-    ctx.fillStyle = supplyMark;
+    ctx.fillStyle = beat ? shade(supplyMark, 0.55) : supplyMark;
     ctx.fillRect(x0 + w - 3 * px, y0 + 4 * px, 2 * px, 2 * px);
+  }
+  // A small pennant on a staff at the top right, fluttering between two shapes.
+  ctx.fillStyle = INK;
+  ctx.fillRect(x0 + w - px, y0 - 3 * px, px, 4 * px);
+  ctx.fillStyle = shade(color, 1.3);
+  if (beat) {
+    ctx.fillRect(x0 + w, y0 - 3 * px, 2 * px, px);
+    ctx.fillRect(x0 + w + px, y0 - 2 * px, 2 * px, px);
+  } else {
+    ctx.fillRect(x0 + w, y0 - 3 * px, 3 * px, 2 * px);
   }
   // Training: gold chevrons to the left of the echelon marks.
   for (let i = 0; i < chevrons; i++) {
@@ -1319,11 +1744,12 @@ function cells(ctx: CanvasRenderingContext2D, x: number, y: number, progress: nu
 }
 
 /** A dotted line made of pixel squares. */
-function dottedLine(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string, px: number): void {
+/** Dots along a line; `phase` (in pixels) makes them march from (x0, y0) toward (x1, y1). */
+function dottedLine(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string, px: number, phase = 0): void {
   const len = Math.hypot(x1 - x0, y1 - y0);
   const step = 4 * px;
   ctx.fillStyle = color;
-  for (let d = step; d < len; d += step) {
+  for (let d = step - ((phase * px) % step); d < len; d += step) {
     const x = x0 + ((x1 - x0) * d) / len;
     const y = y0 + ((y1 - y0) * d) / len;
     ctx.fillRect(Math.round(x - px / 2), Math.round(y - px / 2), px, px);

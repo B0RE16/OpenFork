@@ -195,6 +195,7 @@ net.onMessage = async (msg: ServerMessage) => {
       return;
     case 'error':
       toast(msg.message);
+      game?.onRefused();
       return;
     case 'lobby':
       lobby = msg.lobby;

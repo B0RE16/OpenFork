@@ -23,7 +23,9 @@ import {
   supplyReach,
   UNITS,
 } from '../shared/rules.ts';
+import { FrameMeter } from './fx.ts';
 import { colorOf, MapView } from './map-view.ts';
+import { Sfx } from './sfx.ts';
 import type { Net } from './net.ts';
 import { hudIcon, ICONS, spriteUrl } from './sprites.ts';
 import { $, cellBar, classbar, confirmBox, el, fmt, toast } from './ui.ts';
@@ -81,6 +83,10 @@ export class GameScreen {
   private centred = false;
   finished = false;
   private readonly minimap: HTMLCanvasElement;
+  private readonly sfx = new Sfx();
+  private readonly meter = new FrameMeter();
+  /** The player picked full effects themselves: don't reduce them automatically again. */
+  private fxChosen = false;
 
   constructor(net: Net, map: GameMap, terrain: HTMLImageElement, you: number | null, players: GamePlayer[], onBack: () => void) {
     this.net = net;
@@ -90,6 +96,7 @@ export class GameScreen {
     this.onBack = onBack;
     this.view = new MapView($('#map') as HTMLCanvasElement, map, terrain);
     this.minimap = $('#minimap') as HTMLCanvasElement;
+    this.view.sounds = { gun: (v) => this.sfx.gun(v), boom: (v) => this.sfx.boom(v) };
     this.minimap.width = 240;
     this.minimap.height = Math.round((240 * map.height) / map.width);
     this.setOverlay(false);
@@ -123,6 +130,11 @@ export class GameScreen {
     const frame = () => {
       this.raf = requestAnimationFrame(frame);
       this.panWithKeys();
+      // A struggling machine: drop the ambient effects (once, unless the player chose them).
+      if (this.meter.tick(performance.now()) && this.view.fx.level === 'full' && !this.fxChosen) {
+        this.setEffects('reduced');
+        toast('Effects reduced to keep the game smooth (FX in the top bar)', 'info');
+      }
       if (this.snap) {
         this.view.placement = this.placing ? { valid: this.validFor(this.placing), hover: this.hover } : null;
         this.view.draw(this.snap, this.players, this.you, this.selected, this.region, this.box);
@@ -152,6 +164,7 @@ export class GameScreen {
   // -- server updates -----------------------------------------------------------------------
 
   onSnapshot(snap: Snapshot): void {
+    if (this.snap) this.view.noteLosses(this.snap, snap);
     this.snap = snap;
     // Stand-ins for orders on their way: gone once the server's routes show, or after half a second.
     const p = this.view.pending;
@@ -202,6 +215,14 @@ export class GameScreen {
     };
 
     on(canvas, 'contextmenu', (e: MouseEvent) => e.preventDefault());
+    // Audio may only start after a gesture.
+    on(window, 'pointerdown', () => this.sfx.unlock());
+    on(window, 'keydown', () => this.sfx.unlock());
+    for (const sel of ['#buildbar', '#topbar', '#players']) {
+      on($(sel), 'pointerover', (e: PointerEvent) => {
+        if ((e.target as HTMLElement).closest('button')) this.sfx.tick();
+      });
+    }
     // Diplomacy buttons (ORBAT, peace offers): act on press, see diplomacyAction.
     for (const sel of ['#players', '#offers']) {
       on($(sel), 'pointerdown', (e: PointerEvent) => {
@@ -411,6 +432,7 @@ export class GameScreen {
       }
       // One of your units: select it (Shift adds or removes it).
       if (this.mine(b[0])) {
+        this.sfx.select();
         if (!shift) this.selected = new Set([b[0]]);
         else if (this.selected.has(b[0])) this.selected.delete(b[0]);
         else this.selected.add(b[0]);
@@ -447,6 +469,7 @@ export class GameScreen {
       if (!ok) return;
     }
     this.send({ o: 'move', blobs, to });
+    this.sfx.move();
     // Shown at once, until the server's routes for them arrive.
     this.view.pending.move = { ids: blobs, to, since: this.snap?.time ?? 0 };
   }
@@ -512,6 +535,8 @@ export class GameScreen {
       this.mergeSelected();
     } else if (k === 'h' && sel.length) {
       this.send({ o: 'stop', blobs: sel });
+    } else if (k === 'm') {
+      this.setMuted(!this.sfx.muted);
     } else if (k === 'v') {
       this.setOverlay(!this.view.overlay);
     } else if (k === ' ') {
@@ -525,6 +550,22 @@ export class GameScreen {
       this.send({ o: 'produce', region: this.region, building: 'factory' });
     } else return;
     this.renderPanel();
+  }
+
+  /** The server turned an order down (its message is already on screen). */
+  onRefused(): void {
+    this.sfx.refuse();
+  }
+
+  private setEffects(level: 'full' | 'reduced'): void {
+    this.view.fx.level = level;
+    this.view.fxTop.level = level;
+    this.renderTopbar();
+  }
+
+  private setMuted(on: boolean): void {
+    this.sfx.setMuted(on);
+    this.renderTopbar();
   }
 
   // -- placement mode ---------------------------------------------------------------------------
@@ -547,9 +588,11 @@ export class GameScreen {
     const why = this.whyNot(kind, region);
     if (why) {
       toast(why);
+      this.sfx.refuse();
       return;
     }
     this.send({ o: 'build', region, kind });
+    this.sfx.place();
     this.view.pending.builds.push({ region, kind, since: this.snap?.time ?? 0 });
     if (!shift) this.setPlacing(null);
   }
@@ -586,6 +629,8 @@ export class GameScreen {
       }
     }
     toast(sent ? `${sent} road${sent > 1 ? 's' : ''} queued${why ? ` (some skipped: ${why})` : ''}` : why, sent ? 'info' : 'error');
+    if (sent) this.sfx.place();
+    else this.sfx.refuse();
     if (!shift && sent) this.setPlacing(null);
   }
 
@@ -816,6 +861,14 @@ export class GameScreen {
     const supply = el('button', { class: `toggle${this.view.overlay ? ' on' : ''}`, title: 'Supply overlay (V)' }, ['Supply']);
     supply.onclick = () => this.setOverlay(!this.view.overlay);
     parts.push(supply);
+    const sound = el('button', { class: `toggle${this.sfx.muted ? '' : ' on'}`, title: 'Sound on/off (M)' }, [this.sfx.muted ? 'Muted' : 'Sound']);
+    sound.onclick = () => this.setMuted(!this.sfx.muted);
+    const fx = el('button', { class: `toggle${this.view.fx.level === 'full' ? ' on' : ''}`, title: 'Effects: full / reduced' }, [this.view.fx.level === 'full' ? 'FX' : 'FX low']);
+    fx.onclick = () => {
+      this.fxChosen = true;
+      this.setEffects(this.view.fx.level === 'full' ? 'reduced' : 'full');
+    };
+    parts.push(sound, fx);
     parts.push(el('span', { class: 'clock' }, [t]));
     $('#topbar').replaceChildren(...parts);
   }
@@ -861,6 +914,31 @@ export class GameScreen {
     const name = (id: number) => (this.players[id]?.name ?? 'Neutral').replace(/ \(bot\)$/, '');
     const region = (id: number) => this.map.regions[id]?.name ?? '?';
     let text: string | null = null;
+    // Effects and sounds first (they don't depend on the feed).
+    switch (e.kind) {
+      case 'built': {
+        const row = this.snap?.regions[e.region];
+        if (row) this.view.built(e.region, e.building, row);
+        if (e.owner === this.you) this.sfx.built();
+        break;
+      }
+      case 'captured':
+        if (e.by === this.you) this.sfx.captured();
+        else if (e.from === this.you) this.sfx.lost();
+        break;
+      case 'war':
+        if (e.by !== this.you && (e.a === this.you || e.b === this.you)) this.sfx.alarm();
+        break;
+      case 'peaceOffer':
+        if (e.to === this.you) this.sfx.bell();
+        break;
+      case 'eliminated':
+        if (e.player === this.you) this.sfx.jingle(false);
+        break;
+      case 'won':
+        if (this.you !== null) this.sfx.jingle(e.player === this.you);
+        break;
+    }
     switch (e.kind) {
       case 'battle':
         if (this.you !== null && e.sides.includes(this.you)) text = `CONTACT at ${region(e.region)}`;
