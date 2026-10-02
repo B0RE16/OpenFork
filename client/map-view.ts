@@ -4,7 +4,7 @@ import { decodeGrid, type GameMap, WATER } from '../shared/map.ts';
 import type { BlobRow, GamePlayer, RegionRow, Snapshot } from '../shared/protocol.ts';
 import { UNIT_INDEX } from '../shared/protocol.ts';
 import { UNITS } from '../shared/rules.ts';
-import { blit, blitCentred, FRAME_H, FRAME_W, ICONS, INK, type Sprite, unitFrame } from './sprites.ts';
+import { blit, blitCentred, digitsWidth, FRAME_H, FRAME_W, ICONS, INK, pixelDigits, type Sprite, unitFrame } from './sprites.ts';
 
 export interface Camera {
   x: number;
@@ -235,7 +235,7 @@ export class MapView {
   /** Screen pixels per sprite pixel: pixel art only scales in whole steps. */
   private pixel(): number {
     const z = this.cam.scale;
-    return z < 0.7 ? 1 : z < 1.8 ? 2 : 3;
+    return z < 1.5 ? 1 : z < 3 ? 2 : 3;
   }
 
   draw(
@@ -327,7 +327,7 @@ export class MapView {
     // Each region stacks, top to bottom: name, icons, units (centred 14px below the label
     // point), their numbers, then progress bars.
     const tokenTop = 14 - (FRAME_H * px) / 2;
-    const below = 14 + (FRAME_H * px) / 2 + 3 * px + (px >= 2 ? 12 : 9) + 4;
+    const below = 14 + (FRAME_H * px) / 2 + 3 * px + plateHeight(px) + 4;
     const ipx = Math.max(1, px - 1 + (zoom >= 1.2 ? 1 : 0));
 
     ctx.textAlign = 'center';
@@ -408,7 +408,7 @@ export class MapView {
       const reg = this.map.regions[region];
       const [cx, cy] = this.toScreen(reg.x, reg.y);
       list.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
-      const step = (FRAME_W + 3) * px;
+      const step = Math.max(FRAME_W * px, PLATE_MIN_W) + 3;
       list.forEach((b, k) => {
         placed.push({ id: b[0], x: Math.round(cx + (k - (list.length - 1) / 2) * step), y: Math.round(cy + 14), r });
       });
@@ -441,10 +441,18 @@ export class MapView {
       ctx.fillRect(x0 + px + i * 3 * px, by, 2 * px + (i === 4 ? px : 0), px);
     }
 
-    // Strength number on a dark plate below.
+    // Strength number on a solid dark plate below, edged in the owner's colour.
     const label = String(Math.ceil(b[3]));
-    const size = px >= 2 ? 12 : 9;
-    pixelText(ctx, label, p.x, by + px + 1 + size / 2, size, '#ffffff');
+    const ds = digitScale(px);
+    const pw = Math.max(PLATE_MIN_W, digitsWidth(label, ds) + 6);
+    const ph = plateHeight(px);
+    const ptop = by + 2 * px;
+    const pleft = Math.round(p.x - pw / 2);
+    ctx.fillStyle = INK;
+    ctx.fillRect(pleft, ptop, pw, ph);
+    ctx.fillStyle = color;
+    ctx.fillRect(pleft, ptop, pw, 1);
+    pixelDigits(ctx, label, p.x, ptop + 1 + ph / 2, ds, '#ffffff');
 
     // Supply: amber/red block in the top-right corner of the frame.
     if (b[10] < 0.99) {
@@ -482,6 +490,11 @@ export class MapView {
     }
   }
 }
+
+/** The strength plate under each unit: never smaller than this, so numbers stay readable. */
+const PLATE_MIN_W = 22;
+const digitScale = (px: number) => (px >= 2 ? 3 : 2);
+const plateHeight = (px: number) => 5 * digitScale(px) + 5;
 
 /** Pixel-font text with a 1px dark outline, at whole pixels. */
 function pixelText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size: number, color: string): void {

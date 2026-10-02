@@ -289,3 +289,40 @@ export function hudIcon(name: keyof typeof HUD, scale = 2): string {
   }
   return url;
 }
+
+// -- digits -------------------------------------------------------------------------------------
+
+/** Classic 3×5 pixel digits: unambiguous at any scale (a font's 2 can look like an 8). */
+const DIGITS: Record<string, string[]> = {
+  '0': ['###', '#.#', '#.#', '#.#', '###'],
+  '1': ['.#.', '##.', '.#.', '.#.', '###'],
+  '2': ['###', '..#', '###', '#..', '###'],
+  '3': ['###', '..#', '###', '..#', '###'],
+  '4': ['#.#', '#.#', '###', '..#', '..#'],
+  '5': ['###', '#..', '###', '..#', '###'],
+  '6': ['###', '#..', '###', '#.#', '###'],
+  '7': ['###', '..#', '..#', '.#.', '.#.'],
+  '8': ['###', '#.#', '###', '#.#', '###'],
+  '9': ['###', '#.#', '###', '..#', '###'],
+};
+
+/** Width in screen pixels of a number drawn with pixelDigits. */
+export function digitsWidth(text: string, scale: number): number {
+  return text.length * 4 * scale - scale;
+}
+
+/** Draws a number in 3×5 pixel digits, centred on (x, y). */
+export function pixelDigits(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, scale: number, color: string): void {
+  const x0 = Math.round(x - digitsWidth(text, scale) / 2);
+  const y0 = Math.round(y - (5 * scale) / 2);
+  ctx.fillStyle = color;
+  [...text].forEach((ch, i) => {
+    const rows = DIGITS[ch];
+    if (!rows) return;
+    rows.forEach((row, ry) => {
+      for (let rx = 0; rx < 3; rx++) {
+        if (row[rx] === '#') ctx.fillRect(x0 + (i * 4 + rx) * scale, y0 + ry * scale, scale, scale);
+      }
+    });
+  });
+}
