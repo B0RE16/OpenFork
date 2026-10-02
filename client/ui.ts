@@ -43,3 +43,22 @@ export function fmt(n: number): string {
   if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(Math.floor(n));
 }
+
+/** A pixel-styled yes/no box. Resolves true when confirmed. */
+export function confirmBox(head: string, text: string, yes: string): Promise<boolean> {
+  const box = $('#confirm');
+  $('#confirm-head').textContent = head;
+  $('#confirm-text').textContent = text;
+  $('#confirm-yes').textContent = yes;
+  box.classList.remove('hidden');
+  return new Promise((resolve) => {
+    const done = (v: boolean) => {
+      box.classList.add('hidden');
+      $('#confirm-yes').onclick = null;
+      $('#confirm-no').onclick = null;
+      resolve(v);
+    };
+    $('#confirm-yes').onclick = () => done(true);
+    $('#confirm-no').onclick = () => done(false);
+  });
+}

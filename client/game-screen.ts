@@ -17,7 +17,7 @@ import {
 import { colorOf, MapView } from './map-view.ts';
 import type { Net } from './net.ts';
 import { hudIcon } from './sprites.ts';
-import { $, cellBar, classbar, el, fmt, toast } from './ui.ts';
+import { $, cellBar, classbar, confirmBox, el, fmt, toast } from './ui.ts';
 
 const BUILD_LABEL: Record<BuildingKind, string> = { barracks: 'Barracks', factory: 'Factory', fort: 'Fort', infra: 'Infrastructure' };
 const RES_SHORT: Record<keyof Resources, string> = { money: '$', manpower: 'MP ', steel: 'ST ', oil: 'OIL ' };
@@ -68,6 +68,10 @@ export class GameScreen {
         const r = this.map.regions[region];
         return this.view.toScreen(r.x, r.y);
       },
+      focus: (region: number) => {
+        const r = this.map.regions[region];
+        this.view.focus(r.x, r.y, 1.3);
+      },
     };
     this.view.resize();
     this.view.fit();
@@ -106,6 +110,7 @@ export class GameScreen {
     for (const e of snap.events) this.addEvent(e);
     this.renderTopbar();
     this.renderPlayers();
+    this.renderOffers();
     this.renderPanel();
   }
 
@@ -139,6 +144,15 @@ export class GameScreen {
     };
 
     on(canvas, 'contextmenu', (e: MouseEvent) => e.preventDefault());
+    // Diplomacy buttons (ORBAT, peace offers): act on press, see diplomacyAction.
+    for (const sel of ['#players', '#offers']) {
+      on($(sel), 'pointerdown', (e: PointerEvent) => {
+        const b = (e.target as HTMLElement).closest('[data-act]') as HTMLElement | null;
+        if (!b) return;
+        e.preventDefault();
+        void this.diplomacyAction(b.dataset.act as string, Number(b.dataset.player));
+      });
+    }
     // Double-click: all your units standing in that region.
     on(canvas, 'dblclick', (e: MouseEvent) => {
       const [x, y] = pos(e);
@@ -188,7 +202,7 @@ export class GameScreen {
           this.box = null;
         } else this.click(x, y, e.shiftKey);
       } else if (d.button === 2 && !d.moved) {
-        this.order(x, y);
+        void this.order(x, y);
       }
       this.renderPanel();
     });
@@ -253,7 +267,7 @@ export class GameScreen {
     on(canvas, 'touchend', (e: TouchEvent) => {
       if (touch && !touch.moved && e.touches.length === 0) {
         const blob = this.view.blobAt(touch.x, touch.y);
-        if (blob === null && this.selected.size > 0) this.order(touch.x, touch.y);
+        if (blob === null && this.selected.size > 0) void this.order(touch.x, touch.y);
         else this.click(touch.x, touch.y, false);
         this.renderPanel();
       }
@@ -306,10 +320,68 @@ export class GameScreen {
     if (ids.length) this.region = -1;
   }
 
-  private order(x: number, y: number): void {
+  private async order(x: number, y: number): Promise<void> {
     const to = this.view.regionAt(x, y);
     if (to < 0 || this.selected.size === 0) return;
-    this.send({ o: 'move', blobs: [...this.selected], to });
+    const blobs = [...this.selected];
+    const owner = this.snap?.regions[to][0] ?? -1;
+    if (this.you !== null && owner >= 0 && owner !== this.you && !this.atWar(this.you, owner)) {
+      const truce = this.truceLeft(this.you, owner);
+      if (truce > 0) {
+        toast(`Truce with ${this.nameOf(owner)} for ${truce} s`);
+        return;
+      }
+      const ok = await confirmBox('Act of war', `${this.map.regions[to].name} belongs to ${this.nameOf(owner)}. Sending units in declares war on them.`, 'Attack');
+      if (!ok) return;
+    }
+    this.send({ o: 'move', blobs, to });
+  }
+
+  // -- diplomacy ------------------------------------------------------------------------------
+
+  private nameOf(id: number): string {
+    return (this.players[id]?.name ?? 'Neutral').replace(/ \(bot\)$/, '');
+  }
+
+  private atWar(a: number, b: number): boolean {
+    return !!this.snap?.wars.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
+  }
+
+  private truceLeft(a: number, b: number): number {
+    const t = this.snap?.truces.find(([x, y]) => (x === a && y === b) || (x === b && y === a));
+    return t ? t[2] : 0;
+  }
+
+  /** ORBAT and offer buttons act on press: those panels are redrawn several times a second. */
+  private async diplomacyAction(action: string, player: number): Promise<void> {
+    if (action === 'war') {
+      const ok = await confirmBox('Declaration of war', `Declare war on ${this.nameOf(player)}? Your units may then enter their land and fight theirs.`, 'Declare war');
+      if (ok) this.send({ o: 'war', player });
+    } else if (action === 'peace') {
+      this.send({ o: 'peace', player });
+    } else if (action === 'refuse') {
+      this.send({ o: 'refuse', player });
+    }
+  }
+
+  private renderOffers(): void {
+    const snap = this.snap;
+    const box = $('#offers');
+    const mine = this.you === null ? [] : (snap?.offers ?? []).filter(([, to]) => to === this.you);
+    box.classList.toggle('hidden', mine.length === 0);
+    if (!mine.length) return;
+    box.replaceChildren(
+      classbar('Flash // Peace offer'),
+      ...mine.map(([from, , left]) =>
+        el('div', { class: 'offer' }, [
+          el('span', {}, [`${this.nameOf(from)} offers peace (${left} s)`]),
+          el('div', { class: 'row' }, [
+            el('button', { class: 'primary', 'data-act': 'peace', 'data-player': String(from) }, ['Accept']),
+            el('button', { 'data-act': 'refuse', 'data-player': String(from) }, ['Refuse']),
+          ]),
+        ]),
+      ),
+    );
   }
 
   private key(e: KeyboardEvent): void {
@@ -414,11 +486,26 @@ export class GameScreen {
       ...this.players.map((p) => {
         const row = snap.players[p.id];
         const tag = !row.alive ? '[KIA]' : p.id === this.you ? '[YOU]' : !p.human ? '[BOT]' : row.bot ? '[AWAY]' : '';
+        const me = this.you;
+        const other = me !== null && p.id !== me && row.alive && snap.players[me]?.alive;
+        const war = other && this.atWar(me, p.id);
+        const truce = other ? this.truceLeft(me, p.id) : 0;
+        const offered = other && snap.offers.some(([f, t]) => f === p.id && t === me);
+        const pending = other && snap.offers.some(([f, t]) => f === me && t === p.id);
+        let act: HTMLElement | string = '';
+        if (other && war && !pending) {
+          act = el('button', { class: 'act peace', 'data-act': 'peace', 'data-player': String(p.id), title: offered ? 'Accept their offer of peace' : 'Offer peace' }, [offered ? 'Accept' : 'Peace']);
+        } else if (other && !war && truce === 0) {
+          act = el('button', { class: 'act war', 'data-act': 'war', 'data-player': String(p.id), title: 'Declare war' }, ['War']);
+        }
+        const rel = war ? el('span', { class: 'tag war' }, [pending ? '[WAR · OFFERED]' : '[WAR]']) : truce > 0 ? el('span', { class: 'tag truce' }, [`[TRUCE ${truce}s]`]) : '';
         return el('div', { class: `p${row.alive ? '' : ' dead'}`, title: `${regions.get(p.id) ?? 0} regions, ${Math.round(strength.get(p.id) ?? 0)} strength` }, [
           el('span', { class: 'swatch', style: `background:${p.color}` }),
           el('span', {}, [p.name.replace(/ \(bot\)$/, '')]),
           el('span', { class: 'tag' }, [tag]),
+          rel,
           el('span', { class: 'num' }, [`${regions.get(p.id) ?? 0}`]),
+          act,
         ]);
       }),
     );
@@ -442,6 +529,20 @@ export class GameScreen {
         break;
       case 'eliminated':
         text = `${name(e.player)} knocked out by ${name(e.by)}`;
+        break;
+      case 'war': {
+        const target = e.by === e.a ? e.b : e.a;
+        text = target === this.you ? `!! ${name(e.by)} DECLARED WAR ON YOU` : `${name(e.by)} declared war on ${name(target)}`;
+        break;
+      }
+      case 'peace':
+        text = `Peace: ${name(e.a)} and ${name(e.b)}`;
+        break;
+      case 'peaceOffer':
+        if (e.to === this.you) text = `${name(e.from)} offers peace`;
+        break;
+      case 'peaceRefused':
+        if (e.from === this.you) text = `${name(e.to)} refused peace`;
         break;
       case 'won':
         text = `${name(e.player)} wins`;

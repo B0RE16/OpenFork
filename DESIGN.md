@@ -110,22 +110,40 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
   - a cut-off region with 0 units turns **neutral**.
 - Otherwise empty regions stay yours until an enemy captures them.
 
-## 8. Bots
+## 8. War and peace
+- **Everyone starts at peace.** Units of countries at peace never fight; they can share
+  neutral land (whoever started capturing a region first takes it).
+- **A peaceful country's land is closed:** routes go around it. Sending units into it is an
+  attack and declares war (the game asks you to confirm). You can also declare war from the
+  player list.
+- **Peace:** either side can offer it; the other accepts or refuses, and the offer lapses
+  after 30 s. Peace starts a **3-minute truce** (no war between the two) and sends each
+  side's units home.
+- Zones of control (slow movement) apply only in the land of countries you're at war with.
+
+## 9. Bots
 Bots have **easy, normal and hard** difficulty. They use the same orders as humans:
 - expand into neutral land;
-- build forts and infrastructure on threatened borders;
+- guard their borders and dig in with forts, also in peacetime;
 - produce blobs;
-- attack weak neighbours;
-- defend their capital.
+- fight only countries they're at war with, and defend their capital.
 
-They also take over for players who disconnect.
+**When bots go to war:** when they're attacked, or by difficulty against a bordering
+country much weaker than them:
+- **easy:** never;
+- **normal:** from minute 5, against a neighbour with less than half their strength,
+  sometimes;
+- **hard:** from minute 3, against one with about 60% of their strength or less, more often.
+
+Bots offer peace when a war goes badly or stalls, and accept offers when the war isn't
+going their way. A bot playing for a disconnected person never starts a war.
 
 ## Later (not in v1)
 - **Naval:** ports, sea lanes between ports (no sea zones), transports that carry land blobs,
   and warship blobs that fight on lanes and sink transports.
 - **Air:** air blobs that are fast, ignore terrain and ZoC, and return to airfields.
   Bombers hit forts, buildings and supply; fighters and AA defenses counter them.
-- **Alliances** (shared win) and **fog of war** (see your own regions and their neighbours,
+- **Alliances** (shared win; peace and war exist already) and **fog of war** (see your own regions and their neighbours,
   last-known state elsewhere).
 - Procedural maps, other real-world maps, islands.
 - The Kernel module (copy of flowrace: install/update from GitHub, kernel-host.ts,
@@ -149,7 +167,9 @@ They also take over for players who disconnect.
 | Training range / drill rate / cap from drill | 0–100 / +1 per 6 s / 50 (combat can go to 100) |
 | Training effect at 100 | ×1.5 damage dealt, ×0.67 damage taken |
 | Merge penalty | −10 training |
-| Capture time, empty plains, medium size | 4 s (× terrain/size/fort, ÷ training) |
+| Capture time, empty plains, medium size | 6.5 s (× terrain/size/fort, ÷ training) |
+| Infantry / tank production | 20 s / 30 s |
+| Truce after peace / peace offer stands | 180 s / 30 s |
 | Supply reach from a hub | 6 regions |
 | Base yield per region (money / manpower) | 0.25 / 0.15 per s |
 | Stack cap | 2–4 tokens by size/terrain, +1 per infrastructure level (max 3) |

@@ -58,6 +58,7 @@
       <div id="players" class="hud players"></div>
       <div id="panel" class="hud panel hidden"></div>
       <div id="feed" class="hud feed"></div>
+      <div id="offers" class="hud offers hidden"></div>
       <div id="legend" class="hud legend hidden">
         <div class="classbar"><span>Supply</span><span>V</span></div>
         <div><i class="key in"></i>in supply <i class="key edge"></i>edge of reach <i class="key cut"></i>cut off</div>
@@ -82,6 +83,16 @@
       </div>
     </main>
 
+    <div id="confirm" class="overlay hidden">
+      <div class="card">
+        <div class="classbar"><span id="confirm-head">Confirm</span></div>
+        <p id="confirm-text"></p>
+        <div class="row end">
+          <button id="confirm-no">Cancel</button>
+          <button id="confirm-yes" class="primary danger">Confirm</button>
+        </div>
+      </div>
+    </div>
     <div id="toast" class="toast hidden"></div>
     <div id="offline" class="offline hidden">Signal lost: reconnecting…</div>
     <script type="module" src="app.js"></script>

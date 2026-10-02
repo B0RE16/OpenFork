@@ -777,3 +777,74 @@ button.primary:hover:not(:disabled) {
   text-transform: uppercase;
   animation: blink 0.8s steps(1) infinite;
 }
+
+/* -- diplomacy ------------------------------------------------------------------------------ */
+
+#confirm {
+  position: fixed;
+  z-index: 20;
+}
+
+#confirm .card {
+  max-width: 420px;
+}
+
+#confirm p {
+  margin: 0;
+  text-align: left;
+}
+
+button.danger {
+  background: var(--bad);
+  color: var(--ink);
+  box-shadow:
+    0 -2px 0 0 var(--bad),
+    0 2px 0 0 var(--bad),
+    -2px 0 0 0 var(--bad),
+    2px 0 0 0 var(--bad),
+    4px 4px 0 2px var(--ink);
+}
+
+button.danger:hover:not(:disabled) {
+  background: #ff8a8a;
+}
+
+.tag.war {
+  color: var(--bad);
+}
+
+.tag.truce {
+  color: var(--accent);
+}
+
+.players .act {
+  padding: 0 5px;
+  font-size: 11px;
+  margin: 0 0 0 4px;
+}
+
+.players .act.war {
+  color: var(--bad);
+}
+
+.players .act.peace {
+  color: var(--good);
+}
+
+.offers {
+  top: 56px;
+  right: 230px;
+  padding: 0 0 6px;
+  min-width: 260px;
+}
+
+.offers .offer {
+  padding: 4px 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.offers .offer .row button {
+  padding: 2px 8px;
+  font-size: 13px;
+}
