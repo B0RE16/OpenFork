@@ -68,9 +68,9 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
     a penalty, and its strength stops at the type cap.
   - Splitting is free; both halves keep their training.
 - **Refill:** a damaged blob in supply slowly refills, paying manpower (plus steel for tanks).
-- **Stack cap:** each region holds a limited number of tokens (per player). Units only
-  passing through their own land don't count; without that, armies jam behind the front. The cap depends on region size
-  and terrain and goes up with infrastructure.
+- **Stack cap:** each region holds a limited number of tokens per player. The cap depends on
+  region size and terrain and goes up with infrastructure. Units only passing through their
+  own land don't count; without that, armies jam behind the front.
 
 ## 5. Movement
 - **RTS controls:** click or box-select blobs, right-click a region to send them, and use keys
