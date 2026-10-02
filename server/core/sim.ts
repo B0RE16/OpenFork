@@ -628,7 +628,15 @@ export class Sim {
       if (b.progress < 1) {
         b.progress = Math.min(1, b.progress + dt / this.travelSeconds(b.type, b.owner, b.region, next));
       }
-      if (b.progress >= 1) this.arrive(b);
+      if (b.progress >= 1) {
+        this.arrive(b);
+        // Only passing through its own land: keep going this tick, no stop in the region.
+        if (b.progress === 0 && b.path.length && !b.hold) {
+          b.progress = Math.min(1, dt / this.travelSeconds(b.type, b.owner, b.region, b.path[0]));
+          b.entrench = 0;
+          this.touch();
+        }
+      }
     }
   }
 

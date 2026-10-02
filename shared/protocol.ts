@@ -118,6 +118,8 @@ export interface Snapshot {
   regions: RegionRow[];
   blobs: BlobRow[];
   production: ProductionView[];
+  /** The receiving player's moving units: [blob id, ...remaining regions]. */
+  routes: number[][];
   events: GameEvent[];
   /** Pairs of countries at war. */
   wars: Array<[number, number]>;

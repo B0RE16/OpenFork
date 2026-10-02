@@ -345,7 +345,8 @@ export class GameServer {
     if (!game) return;
     this.send(conn, { t: 'game.start', map: game.mapId, you: game.playerOf(identity), players: game.players });
     const shared = game.sharedSnapshot([]);
-    this.send(conn, { t: 'snap', snap: { ...shared, production: game.productionFor(game.playerOf(identity)) } });
+    const you = game.playerOf(identity);
+    this.send(conn, { t: 'snap', snap: { ...shared, production: game.productionFor(you), routes: game.routesFor(you) } });
     if (game.over) this.send(conn, { t: 'game.over', winner: game.sim.state.winner });
   }
 
@@ -372,7 +373,8 @@ export class GameServer {
       const shared = game.sharedSnapshot(game.takeEvents());
       for (const m of lobby.members.values()) {
         if (m.conns.size === 0) continue;
-        const snap = { ...shared, production: game.productionFor(game.playerOf(m.identity.id)) };
+        const you = game.playerOf(m.identity.id);
+        const snap = { ...shared, production: game.productionFor(you), routes: game.routesFor(you) };
         for (const c of m.conns) this.send(c, { t: 'snap', snap });
       }
       if (game.over) this.finish(lobby, game);

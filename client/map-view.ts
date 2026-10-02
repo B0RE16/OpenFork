@@ -12,11 +12,25 @@ export interface Camera {
   scale: number;
 }
 
+/** Something drawn for one or more units, with where it was drawn (for clicks). */
 interface Placed {
-  id: number;
+  ids: number[];
   x: number;
   y: number;
   r: number;
+}
+
+/** One token or stack to draw this frame. */
+interface Item {
+  /** Stable across frames: 'b:<unit>' for a single unit, 's:<owner>:<region>' for a stack,
+   * 'm:...' for units moving together. */
+  key: string;
+  rows: BlobRow[];
+  owner: number;
+  moving: boolean;
+  /** Target position in map coordinates. */
+  tx: number;
+  ty: number;
 }
 
 const SNAP_MS = 200;
@@ -44,6 +58,10 @@ export class MapView {
   private prevPos = new Map<number, [number, number]>();
   private currPos = new Map<number, [number, number]>();
   private snapAt = 0;
+  /** Eased display position of each item (map coordinates), and which item showed each unit. */
+  private display = new Map<string, [number, number]>();
+  private itemOf = new Map<number, string>();
+  private lastFrame = performance.now();
 
   constructor(canvas: HTMLCanvasElement, map: GameMap, terrain: HTMLImageElement) {
     this.canvas = canvas;
@@ -136,10 +154,11 @@ export class MapView {
     return r === WATER ? -1 : r;
   }
 
-  blobAt(sx: number, sy: number): number | null {
+  /** The units under a screen point (a stack gives all of its units), or null. */
+  blobAt(sx: number, sy: number): number[] | null {
     for (let i = this.placed.length - 1; i >= 0; i--) {
       const p = this.placed[i];
-      if ((p.x - sx) ** 2 + (p.y - sy) ** 2 <= (p.r + 2) ** 2) return p.id;
+      if ((p.x - sx) ** 2 + (p.y - sy) ** 2 <= (p.r + 2) ** 2) return p.ids;
     }
     return null;
   }
@@ -147,7 +166,18 @@ export class MapView {
   blobsIn(x0: number, y0: number, x1: number, y1: number): number[] {
     const [ax, bx] = [Math.min(x0, x1), Math.max(x0, x1)];
     const [ay, by] = [Math.min(y0, y1), Math.max(y0, y1)];
-    return this.placed.filter((p) => p.x >= ax && p.x <= bx && p.y >= ay && p.y <= by).map((p) => p.id);
+    return this.placed.filter((p) => p.x >= ax && p.x <= bx && p.y >= ay && p.y <= by).flatMap((p) => p.ids);
+  }
+
+  /** Where a unit is drawn on screen right now (for tests and the console). */
+  screenOfUnit(id: number): [number, number] | null {
+    const p = this.placed.find((x) => x.ids.includes(id));
+    return p ? [p.x, p.y] : null;
+  }
+
+  /** Every drawn token or stack: its units and screen position (for tests). */
+  drawnItems(): Array<{ ids: number[]; x: number; y: number }> {
+    return this.placed.map((p) => ({ ids: p.ids, x: p.x, y: p.y }));
   }
 
   // -- state --------------------------------------------------------------------------------
@@ -160,12 +190,13 @@ export class MapView {
     this.snapAt = performance.now();
   }
 
+  /** Where a unit is on its road (map coordinates). */
   private anchor(b: BlobRow): [number, number] {
     const from = this.map.regions[b[6]];
     if (b[7] < 0 || b[8] <= 0) return [from.x, from.y];
     const to = this.map.regions[b[7]];
-    // Units waiting at a full region's edge stop short of it.
-    const t = Math.min(b[8], 0.7);
+    // Units waiting at the edge of a full region stop a little short of it.
+    const t = b[8] >= 1 ? 0.85 : b[8];
     return [from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t];
   }
 
@@ -352,7 +383,7 @@ export class MapView {
     this.drawGrid(w, h);
 
     this.drawRegions(snap, players, you);
-    this.drawBlobs(snap, players, selected);
+    this.drawBlobs(snap, players, selected, you);
 
     if (box) {
       const [x0, y0] = [Math.round(Math.min(box[0], box[2])), Math.round(Math.min(box[1], box[3]))];
@@ -398,15 +429,12 @@ export class MapView {
       if (c && snap.players[p.id]?.alive) capitals.set(c.capital, p.id);
     });
     const owners = new Map<number, Set<number>>();
-    const standing = new Map<number, number>();
     for (const b of snap.blobs) {
       if (b[8] > 0) continue;
       const s = owners.get(b[6]) ?? new Set();
       s.add(b[1]);
       owners.set(b[6], s);
-      standing.set(b[6], (standing.get(b[6]) ?? 0) + 1);
     }
-    const blink = Math.floor(performance.now() / 300) % 2;
     // Each region stacks, top to bottom: name, icons, units (centred 14px below the label
     // point), their numbers, then progress bars.
     const tokenTop = 14 - (FRAME_H * px) / 2;
@@ -444,8 +472,9 @@ export class MapView {
         blitCentred(ctx, ICONS.capital, x, y, 1);
       }
 
-      // Name, in the pixel font, above everything else.
-      if (zoom >= 0.9) {
+      // Name, in the pixel font, above everything else (not over a battle unless zoomed in).
+      const busy = (owners.get(region.id)?.size ?? 0) > 1;
+      if (zoom >= 0.9 && (!busy || zoom >= 1.8)) {
         const size = zoom >= 1.8 ? 16 : 12;
         const top = showIcons ? iconBottom - 10 * ipx : y + tokenTop;
         pixelText(ctx, region.name.toUpperCase(), x, top - 3 - size / 2, size, '#e6edf2');
@@ -462,50 +491,226 @@ export class MapView {
       if (rr[4] >= 0 && rr[5] > 0) cells(ctx, x, y + below, rr[5], colorOf(players, rr[4]), px);
       // Construction: 8 cells in gold, for your own regions.
       if (rr[6] >= 0 && rr[0] === you) cells(ctx, x, y + below + 4 * px, rr[7], '#f1c232', px);
-      // Battles: blinking crossed swords just right of the units.
-      if ((owners.get(region.id)?.size ?? 0) > 1) {
-        const row = (standing.get(region.id) ?? 0) * (FRAME_W + 3) * px;
-        blitCentred(ctx, ICONS.swords[blink], x + row / 2 + 6 * px, y + 14, px);
-      }
     }
   }
 
-  private drawBlobs(snap: Snapshot, players: GamePlayer[], selected: Set<number>): void {
+  /**
+   * Units: grouped into items (single tokens, per-country stacks, units moving together),
+   * eased toward where they belong so nothing ever snaps, with routes and arrows below.
+   */
+  private drawBlobs(snap: Snapshot, players: GamePlayer[], selected: Set<number>, you: number | null): void {
     const ctx = this.ctx;
+    const now = performance.now();
+    const ease = 1 - Math.exp(-Math.min(0.1, (now - this.lastFrame) / 1000) * 12);
+    this.lastFrame = now;
     const px = this.pixel();
-    const t = Math.min(1, (performance.now() - this.snapAt) / SNAP_MS);
-    const standing = new Map<number, BlobRow[]>();
+    const scale = this.cam.scale;
+    const t = Math.min(1, (now - this.snapAt) / SNAP_MS);
+    const atWar = (a: number, b: number) => snap.wars.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
+
+    // Moving (or passing through a region on the way) vs standing.
     const moving: BlobRow[] = [];
+    const standing = new Map<number, BlobRow[]>();
     for (const b of snap.blobs) {
-      if (b[8] > 0) moving.push(b);
+      const passing = b[8] === 0 && b[7] >= 0 && !(b[11] & 1);
+      if (b[8] > 0 || passing) moving.push(b);
       else standing.set(b[6], [...(standing.get(b[6]) ?? []), b]);
     }
-    const placed: Placed[] = [];
-    const r = (FRAME_W * px) / 2;
-
-    // Moving units: along their road, with a dotted pixel line to where they're going.
-    for (const b of moving) {
+    const road = (b: BlobRow): [number, number] => {
       const cur = this.currPos.get(b[0]) ?? this.anchor(b);
       const prev = this.prevPos.get(b[0]) ?? cur;
-      const [x, y] = this.toScreen(prev[0] + (cur[0] - prev[0]) * t, prev[1] + (cur[1] - prev[1]) * t);
-      const to = this.map.regions[b[7]];
-      const [tx, ty] = this.toScreen(to.x, to.y);
-      dottedLine(ctx, x, y, tx, ty + 14, colorOf(players, b[1]), px);
-      placed.push({ id: b[0], x: Math.round(x), y: Math.round(y), r });
+      return [prev[0] + (cur[0] - prev[0]) * t, prev[1] + (cur[1] - prev[1]) * t];
+    };
+
+    const items: Item[] = [];
+    // Units on the same road close together move as one item.
+    const roads = new Map<string, BlobRow[]>();
+    for (const b of moving) {
+      const k = `${b[1]}:${b[6]}:${b[7]}`;
+      roads.set(k, [...(roads.get(k) ?? []), b]);
     }
-    // Standing units: a row under the region's name, grouped by owner.
+    for (const [k, list] of roads) {
+      list.sort((a, b) => a[8] - b[8]);
+      let group: BlobRow[] = [];
+      const flush = () => {
+        if (!group.length) return;
+        const ps = group.map(road);
+        const tx = ps.reduce((s, p) => s + p[0], 0) / ps.length;
+        const ty = ps.reduce((s, p) => s + p[1], 0) / ps.length;
+        const key = group.length === 1 ? `b:${group[0][0]}` : `m:${k}:${Math.min(...group.map((b) => b[0]))}`;
+        items.push({ key, rows: group, owner: group[0][1], moving: true, tx, ty });
+        group = [];
+      };
+      for (const b of list) {
+        if (group.length && b[8] - group[0][8] > 0.15) flush();
+        group.push(b);
+      }
+      flush();
+    }
+
+    // Standing units: individual tokens if zoomed in and they fit, else one stack per country.
+    const step = Math.max(FRAME_W * px, PLATE_MIN_W) + 3;
+    const sideGap = 14 * px;
+    const swords: Array<[number, number]> = [];
     for (const [region, list] of standing) {
       const reg = this.map.regions[region];
-      const [cx, cy] = this.toScreen(reg.x, reg.y);
-      list.sort((a, b) => a[1] - b[1] || a[0] - b[0]);
-      const step = Math.max(FRAME_W * px, PLATE_MIN_W) + 3;
-      list.forEach((b, k) => {
-        placed.push({ id: b[0], x: Math.round(cx + (k - (list.length - 1) / 2) * step), y: Math.round(cy + 14), r });
-      });
+      const byOwner = new Map<number, BlobRow[]>();
+      for (const b of [...list].sort((a, b) => b[3] - a[3])) byOwner.set(b[1], [...(byOwner.get(b[1]) ?? []), b]);
+      const owners = [...byOwner.keys()].sort((a, b) => (a === you ? -1 : b === you ? 1 : a - b));
+      const fits = list.length * step + (owners.length - 1) * sideGap <= Math.sqrt(reg.area) * scale * 0.9;
+      const single = px >= 2 && fits;
+      const slots: Array<{ key: string; rows: BlobRow[]; owner: number }> = [];
+      for (const o of owners) {
+        const rows = byOwner.get(o) as BlobRow[];
+        if (single) for (const b of rows) slots.push({ key: `b:${b[0]}`, rows: [b], owner: o });
+        else slots.push({ key: `s:${o}:${region}`, rows, owner: o });
+      }
+      const width = slots.length * step + (owners.length - 1) * sideGap;
+      let x = -width / 2 + step / 2;
+      let prev = -2;
+      for (const slot of slots) {
+        if (prev !== -2 && slot.owner !== prev) {
+          // Crossed swords between two sides at war.
+          if (atWar(prev, slot.owner)) swords.push([reg.x + (x - step / 2 + sideGap / 2) / scale, reg.y + 14 / scale]);
+          x += sideGap;
+        }
+        items.push({ key: slot.key, rows: slot.rows, owner: slot.owner, moving: false, tx: reg.x + x / scale, ty: reg.y + 14 / scale });
+        x += step;
+        prev = slot.owner;
+      }
     }
-    const byId = new Map(snap.blobs.map((b) => [b[0], b]));
-    for (const p of placed) this.drawToken(byId.get(p.id) as BlobRow, p, players, selected.has(p.id), px);
+
+    this.declutter(items, step, FRAME_H * px + 4 * px + plateHeight(px));
+
+    // Ease every item toward its target; a new item starts where its units were last drawn.
+    const display = new Map<string, [number, number]>();
+    const itemOf = new Map<number, string>();
+    for (const it of items) {
+      let d = this.display.get(it.key);
+      if (!d) {
+        for (const b of it.rows) {
+          const was = this.display.get(this.itemOf.get(b[0]) ?? '');
+          if (was) {
+            d = [was[0], was[1]];
+            break;
+          }
+        }
+      }
+      d ??= [it.tx, it.ty];
+      d[0] += (it.tx - d[0]) * ease;
+      d[1] += (it.ty - d[1]) * ease;
+      display.set(it.key, d);
+      for (const b of it.rows) itemOf.set(b[0], it.key);
+    }
+    this.display = display;
+    this.itemOf = itemOf;
+
+    // Routes (yours) and next-hop arrows (everyone else's), under the tokens.
+    const routes = new Map(snap.routes.map((r) => [r[0], r.slice(1)]));
+    const markers = new Set<number>();
+    for (const it of items) {
+      const [sx, sy] = this.toScreen(...(display.get(it.key) as [number, number]));
+      const color = colorOf(players, it.owner);
+      if (it.owner === you) {
+        const route = routes.get(it.rows[0][0]);
+        if (!route?.length) continue;
+        const sel = it.rows.some((b) => selected.has(b[0]));
+        ctx.globalAlpha = sel ? 1 : 0.35;
+        let [ax, ay] = [sx, sy];
+        for (const r of route) {
+          const reg = this.map.regions[r];
+          const [bx, by] = this.toScreen(reg.x, reg.y);
+          dottedLine(ctx, ax, ay, bx, by + 14, color, px);
+          [ax, ay] = [bx, by + 14];
+        }
+        ctx.globalAlpha = 1;
+        if (sel) markers.add(route[route.length - 1]);
+      } else if (it.moving && it.rows[0][7] >= 0) {
+        const next = this.map.regions[it.rows[0][7]];
+        const [nx, ny] = this.toScreen(next.x, next.y + 14 / scale);
+        arrow(ctx, sx, sy, nx, ny, (FRAME_W * px) / 2 + 3 * px, color, px);
+      }
+    }
+    const blink = Math.floor(now / 300) % 2;
+    for (const r of markers) {
+      if (!blink) continue;
+      const reg = this.map.regions[r];
+      const [mx, my] = this.toScreen(reg.x, reg.y);
+      brackets(ctx, Math.round(mx), Math.round(my + 14), 12 * px, '#ffffff', px);
+    }
+    for (const [wx, wy] of swords) {
+      const [x, y] = this.toScreen(wx, wy);
+      blitCentred(ctx, ICONS.swords[blink], Math.round(x), Math.round(y), px);
+    }
+
+    // Tokens and stacks.
+    const placed: Placed[] = [];
+    const r = (FRAME_W * px) / 2;
+    for (const it of items) {
+      const [x, y] = this.toScreen(...(display.get(it.key) as [number, number]));
+      const p = { ids: it.rows.map((b) => b[0]), x: Math.round(x), y: Math.round(y), r };
+      this.drawItem(it.rows, p, players, it.rows.some((b) => selected.has(b[0])), px);
+      placed.push(p);
+    }
     this.placed = placed;
+  }
+
+  /**
+   * Zoomed out, neighbouring regions' units and units on the roads pile up on screen. Items
+   * of one country that would overlap become one stack (the biggest one's place and key);
+   * items of different countries that overlap are pushed apart.
+   */
+  private declutter(items: Item[], w: number, h: number): void {
+    const scale = this.cam.scale;
+    const cw = this.canvas.clientWidth;
+    const ch = this.canvas.clientHeight;
+    const onScreen = items.filter((it) => {
+      const [x, y] = this.toScreen(it.tx, it.ty);
+      return x > -w && y > -h && x < cw + w && y < ch + h;
+    });
+    onScreen.sort((a, b) => Number(a.moving) - Number(b.moving) || b.rows.length - a.rows.length);
+    const kept: Item[] = [];
+    const gone = new Set<Item>();
+    for (const it of onScreen) {
+      const host = kept.find(
+        (k) => k.owner === it.owner && Math.abs(k.tx - it.tx) * scale < w * 0.9 && Math.abs(k.ty - it.ty) * scale < h * 0.9,
+      );
+      if (host) {
+        host.rows = [...host.rows, ...it.rows].sort((a, b) => b[3] - a[3]);
+        host.moving &&= it.moving;
+        gone.add(it);
+      } else kept.push(it);
+    }
+    for (let i = items.length - 1; i >= 0; i--) if (gone.has(items[i])) items.splice(i, 1);
+
+    // Different countries: a few rounds of pushing overlapping pairs apart (sideways mostly).
+    for (let round = 0; round < 4; round++) {
+      let moved = false;
+      for (let i = 0; i < kept.length; i++) {
+        for (let j = i + 1; j < kept.length; j++) {
+          const a = kept[i];
+          const b = kept[j];
+          const dx = (b.tx - a.tx) * scale;
+          const dy = (b.ty - a.ty) * scale;
+          const ox = w - Math.abs(dx);
+          const oy = h - Math.abs(dy);
+          if (ox <= 0 || oy <= 0) continue;
+          moved = true;
+          // Push along the axis that needs the shorter move; standing items move less.
+          const share = a.moving === b.moving ? 0.5 : a.moving ? 1 : 0;
+          if (ox / w <= oy / h) {
+            const s = (dx >= 0 ? 1 : -1) * (ox / scale);
+            a.tx -= s * share;
+            b.tx += s * (1 - share);
+          } else {
+            const s = (dy >= 0 ? 1 : -1) * (oy / scale);
+            a.ty -= s * share;
+            b.ty += s * (1 - share);
+          }
+        }
+      }
+      if (!moved) break;
+    }
   }
 
   /** The minimap: the whole map small, your view as a cyan box, battles as red dots. */
@@ -552,19 +757,36 @@ export class MapView {
   }
 
   /** A NATO symbol: echelon marks, the framed branch symbol, a strength bar and number. */
-  private drawToken(b: BlobRow, p: Placed, players: GamePlayer[], selected: boolean, px: number): void {
+  /**
+   * A NATO symbol for one unit, or a stack of them: echelon marks, the framed branch symbol
+   * (with a "deck" of frames behind for a stack), a strength bar, the strength number and,
+   * for a stack, how many units are in it.
+   */
+  private drawItem(rows: BlobRow[], p: Placed, players: GamePlayer[], selected: boolean, px: number): void {
     const ctx = this.ctx;
-    const type = UNIT_INDEX[b[2]];
-    const color = colorOf(players, b[1]);
-    const frame = unitFrame(type, b[4], UNITS[type].maxSize, color);
+    const color = colorOf(players, rows[0][1]);
+    const byType = new Map<string, number>();
+    for (const b of rows) byType.set(UNIT_INDEX[b[2]], (byType.get(UNIT_INDEX[b[2]]) ?? 0) + b[3]);
+    const type = ([...byType].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'infantry') as 'infantry' | 'tank';
+    const strength = rows.reduce((s, b) => s + b[3], 0);
+    const size = rows.reduce((s, b) => s + b[4], 0);
+    const supply = Math.min(...rows.map((b) => b[10]));
+    const training = rows.reduce((s, b) => s + b[5] * b[3], 0) / Math.max(1, strength);
     const w = FRAME_W * px;
     const h = FRAME_H * px;
     const x0 = Math.round(p.x - w / 2);
     const y0 = Math.round(p.y - h / 2);
-    blit(ctx, frame, x0, y0, px);
+
+    // The deck: up to two more frames peeking out behind (other types show as themselves).
+    for (let i = Math.min(2, rows.length - 1); i >= 1; i--) {
+      const b = rows[i];
+      const back = unitFrame(UNIT_INDEX[b[2]], b[4], UNITS[UNIT_INDEX[b[2]]].maxSize, color);
+      blit(ctx, back, x0 + 2 * i * px, y0 - 2 * i * px, px);
+    }
+    blit(ctx, unitFrame(type, rows[0][4], UNITS[type].maxSize, color), x0, y0, px);
 
     // Strength bar under the frame: 5 cells.
-    const share = b[3] / Math.max(1, b[4]);
+    const share = strength / Math.max(1, size);
     const by = y0 + h + px;
     ctx.fillStyle = INK;
     ctx.fillRect(x0, by - px, w, 3 * px);
@@ -574,33 +796,25 @@ export class MapView {
       ctx.fillRect(x0 + px + i * 3 * px, by, 2 * px + (i === 4 ? px : 0), px);
     }
 
-    // Strength number below, in pixel digits with a thin dark outline (no box).
-    const label = String(Math.ceil(b[3]));
-    const ds = digitScale(px);
-    const ny = by + 2 * px + plateHeight(px) / 2;
-    for (const [dx, dy] of [
-      [-1, 0],
-      [1, 0],
-      [0, -1],
-      [0, 1],
-      [-1, -1],
-      [1, -1],
-      [-1, 1],
-      [1, 1],
-    ]) {
-      pixelDigits(ctx, label, p.x + dx, ny + dy, ds, INK);
+    // Strength number below, in pixel digits with a thin dark outline.
+    outlinedDigits(ctx, String(Math.ceil(strength)), p.x, by + 2 * px + plateHeight(px) / 2, digitScale(px));
+
+    // A stack: how many units, top right (×N).
+    if (rows.length > 1) {
+      const cx = x0 + w + 2 * px + 2 * px * Math.min(2, rows.length - 1);
+      const cy = y0 - 2 * px * Math.min(2, rows.length - 1) + 2 * px;
+      countBadge(ctx, rows.length, cx, cy, px);
     }
-    pixelDigits(ctx, label, p.x, ny, ds, '#ffffff');
 
     // Supply: amber/red block in the top-right corner of the frame.
-    if (b[10] < 0.99) {
+    if (supply < 0.99) {
       ctx.fillStyle = INK;
       ctx.fillRect(x0 + w - 4 * px, y0 + 3 * px, 4 * px, 4 * px);
-      ctx.fillStyle = b[10] <= 0 ? '#ff5a5a' : '#ffb347';
+      ctx.fillStyle = supply <= 0 ? '#ff5a5a' : '#ffb347';
       ctx.fillRect(x0 + w - 3 * px, y0 + 4 * px, 2 * px, 2 * px);
     }
     // Training: gold chevrons to the left of the echelon marks.
-    const chevrons = Math.floor(b[5] / 34);
+    const chevrons = Math.floor(training / 34);
     for (let i = 0; i < chevrons; i++) {
       const cx = x0 + i * 4 * px;
       ctx.fillStyle = '#f1c232';
@@ -610,21 +824,7 @@ export class MapView {
     }
     // Selected: blinking corner brackets.
     if (selected && Math.floor(performance.now() / 400) % 2 === 0) {
-      ctx.fillStyle = '#ffffff';
-      const l = 4 * px;
-      const left = x0 - 2 * px;
-      const top = y0 + 2 * px;
-      const right = x0 + w + px;
-      const bottom = y0 + h + 3 * px;
-      for (const [cx, cy, dx, dy] of [
-        [left, top, 1, 1],
-        [right, top, -1, 1],
-        [left, bottom, 1, -1],
-        [right, bottom, -1, -1],
-      ]) {
-        ctx.fillRect(dx > 0 ? cx : cx - l + px, cy, l, px);
-        ctx.fillRect(cx, dy > 0 ? cy : cy - l + px, px, l);
-      }
+      brackets(ctx, Math.round(p.x), Math.round(y0 + h / 2 + 2 * px), w / 2 + 2 * px, '#ffffff', px);
     }
   }
 }
@@ -661,6 +861,83 @@ function pixelText(ctx: CanvasRenderingContext2D, text: string, x: number, y: nu
   }
   ctx.fillStyle = color;
   ctx.fillText(text, rx, ry);
+}
+
+/** Pixel digits, white with a thin dark outline. */
+function outlinedDigits(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, scale: number): void {
+  for (const [dx, dy] of [
+    [-1, 0],
+    [1, 0],
+    [0, -1],
+    [0, 1],
+    [-1, -1],
+    [1, -1],
+    [-1, 1],
+    [1, 1],
+  ]) {
+    pixelDigits(ctx, text, x + dx, y + dy, scale, INK);
+  }
+  pixelDigits(ctx, text, x, y, scale, '#ffffff');
+}
+
+/** "×N" on a dark chip, its left edge at x, centred on y. */
+function countBadge(ctx: CanvasRenderingContext2D, n: number, x: number, y: number, px: number): void {
+  const text = String(n);
+  const w = 4 * px + text.length * 4 * px + px;
+  const h = 7 * px;
+  const x0 = Math.round(x);
+  const y0 = Math.round(y - h / 2);
+  ctx.fillStyle = INK;
+  ctx.fillRect(x0, y0, w, h);
+  ctx.fillStyle = '#ffffff';
+  // a 3×3 ×
+  for (const [dx, dy] of [
+    [0, 0],
+    [2, 0],
+    [1, 1],
+    [0, 2],
+    [2, 2],
+  ]) {
+    ctx.fillRect(x0 + px + dx * px, y0 + 2 * px + dy * px, px, px);
+  }
+  pixelDigits(ctx, text, x0 + 4 * px + (text.length * 4 * px - px) / 2 + px, y0 + h / 2, px, '#ffffff');
+}
+
+/** Four corner brackets around (x, y), `half` pixels out. */
+function brackets(ctx: CanvasRenderingContext2D, x: number, y: number, half: number, color: string, px: number): void {
+  ctx.fillStyle = color;
+  const l = 4 * px;
+  const left = Math.round(x - half);
+  const right = Math.round(x + half);
+  const top = Math.round(y - half);
+  const bottom = Math.round(y + half);
+  for (const [cx, cy, dx, dy] of [
+    [left, top, 1, 1],
+    [right, top, -1, 1],
+    [left, bottom, 1, -1],
+    [right, bottom, -1, -1],
+  ]) {
+    ctx.fillRect(dx > 0 ? cx : cx - l + px, cy, l, px);
+    ctx.fillRect(cx, dy > 0 ? cy : cy - l + px, px, l);
+  }
+}
+
+/** Three pixel dots, growing, pointing from (x0, y0) toward (x1, y1), starting `skip` out. */
+function arrow(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, skip: number, color: string, px: number): void {
+  const len = Math.hypot(x1 - x0, y1 - y0);
+  if (len < skip + 6 * px) return;
+  const ux = (x1 - x0) / len;
+  const uy = (y1 - y0) / len;
+  for (let i = 0; i < 3; i++) {
+    const d = skip + i * 4 * px;
+    const s = (i + 1) * px;
+    const x = Math.round(x0 + ux * d - s / 2);
+    const y = Math.round(y0 + uy * d - s / 2);
+    ctx.fillStyle = INK;
+    ctx.fillRect(x - px, y - px, s + 2 * px, s + 2 * px);
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, s, s);
+  }
 }
 
 /** An 8-cell progress bar centred on x. */

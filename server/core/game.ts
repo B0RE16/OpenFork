@@ -155,7 +155,7 @@ export class Game {
   }
 
   /** The parts of a snapshot that are the same for everyone. */
-  sharedSnapshot(events: GameEvent[]): Omit<Snapshot, 'production'> {
+  sharedSnapshot(events: GameEvent[]): Omit<Snapshot, 'production' | 'routes'> {
     const st = this.sim.state;
     const players: PlayerRow[] = st.players.map((p) => ({
       alive: p.alive,
@@ -199,6 +199,14 @@ export class Game {
       .filter(([, until]) => until > st.time)
       .map(([k, until]) => [...pair(k, ':'), Math.ceil(until - st.time)] as [number, number, number]);
     return { time: round(st.time, 1), players, regions, blobs, events, wars, offers, truces };
+  }
+
+  /** The remaining route of each of `player`'s moving units: [blob id, ...regions]. */
+  routesFor(player: number | null): number[][] {
+    if (player === null) return [];
+    const out: number[][] = [];
+    for (const b of this.sim.state.blobs.values()) if (b.owner === player && b.path.length) out.push([b.id, ...b.path]);
+    return out;
   }
 
   productionFor(player: number | null): ProductionView[] {

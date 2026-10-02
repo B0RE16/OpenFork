@@ -64,6 +64,8 @@ export class GameScreen {
     (window as unknown as { openfork: unknown }).openfork = {
       you: this.you,
       snap: () => this.snap,
+      unitAt: (id: number) => this.view.screenOfUnit(id),
+      items: () => this.view.drawnItems(),
       screenOf: (region: number) => {
         const r = this.map.regions[region];
         return this.view.toScreen(r.x, r.y);
@@ -156,8 +158,8 @@ export class GameScreen {
     // Double-click: all your units standing in that region.
     on(canvas, 'dblclick', (e: MouseEvent) => {
       const [x, y] = pos(e);
-      const id = this.view.blobAt(x, y);
-      const region = id !== null && this.mine(id) ? (this.blob(id) as BlobRow)[6] : this.view.regionAt(x, y);
+      const ids = this.view.blobAt(x, y);
+      const region = ids !== null && this.mine(ids[0]) ? (this.blob(ids[0]) as BlobRow)[6] : this.view.regionAt(x, y);
       if (region >= 0) this.selectRegionUnits(region, e.shiftKey);
       this.renderPanel();
     });
@@ -292,14 +294,18 @@ export class GameScreen {
   }
 
   private click(x: number, y: number, shift: boolean): void {
-    const id = this.view.blobAt(x, y);
-    if (id !== null) {
-      const b = this.blob(id);
-      if (b && this.mine(id)) {
+    // A token or a whole stack: clicking selects all of your units in it.
+    const ids = this.view.blobAt(x, y);
+    if (ids !== null) {
+      const b = this.blob(ids[0]);
+      if (b && this.mine(ids[0])) {
         if (shift) {
-          if (this.selected.has(id)) this.selected.delete(id);
-          else this.selected.add(id);
-        } else this.selected = new Set([id]);
+          const all = ids.every((id) => this.selected.has(id));
+          for (const id of ids) {
+            if (all) this.selected.delete(id);
+            else this.selected.add(id);
+          }
+        } else this.selected = new Set(ids);
         this.region = b[8] > 0 ? -1 : b[6];
         return;
       }
