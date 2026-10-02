@@ -66,6 +66,11 @@ export class GameScreen {
   /** The region under the cursor. */
   private hover = -1;
   private buildbarKey = '';
+  /** Where the building being placed can go: worked out once per snapshot. */
+  private valid: { snap: Snapshot; kind: BuildingKind; set: Set<number> } | null = null;
+  private miniSnap: Snapshot | null = null;
+  private miniCam = '';
+  private miniAt = 0;
   /** Road tool: the regions dragged across so far. */
   private roadPath: number[] | null = null;
   private box: [number, number, number, number] | null = null;
@@ -119,9 +124,17 @@ export class GameScreen {
       this.raf = requestAnimationFrame(frame);
       this.panWithKeys();
       if (this.snap) {
-        this.view.placement = this.placing ? { valid: this.validRegions(this.placing), hover: this.hover } : null;
+        this.view.placement = this.placing ? { valid: this.validFor(this.placing), hover: this.hover } : null;
         this.view.draw(this.snap, this.players, this.you, this.selected, this.region, this.box);
-        this.view.drawMinimap(this.minimap, this.snap);
+        // The minimap: on news or a camera move, at most 5 times a second.
+        const cam = `${this.view.cam.x}|${this.view.cam.y}|${this.view.cam.scale}`;
+        const now = performance.now();
+        if ((this.snap !== this.miniSnap || cam !== this.miniCam) && now - this.miniAt > 200) {
+          this.view.drawMinimap(this.minimap, this.snap);
+          this.miniSnap = this.snap;
+          this.miniCam = cam;
+          this.miniAt = now;
+        }
       }
     };
     frame();
@@ -140,6 +153,11 @@ export class GameScreen {
 
   onSnapshot(snap: Snapshot): void {
     this.snap = snap;
+    // Stand-ins for orders on their way: gone once the server's routes show, or after half a second.
+    const p = this.view.pending;
+    const routed = new Set(snap.routes.map((r) => r[0]));
+    if (p.move && (p.move.ids.some((id) => routed.has(id)) || snap.time > p.move.since + 0.5)) p.move = null;
+    p.builds = p.builds.filter((b) => snap.time <= b.since + 0.5);
     const alive = new Set(snap.blobs.map((b) => b[0]));
     for (const id of this.selected) if (!alive.has(id)) this.selected.delete(id);
     if (!this.centred && this.you !== null) {
@@ -429,6 +447,8 @@ export class GameScreen {
       if (!ok) return;
     }
     this.send({ o: 'move', blobs, to });
+    // Shown at once, until the server's routes for them arrive.
+    this.view.pending.move = { ids: blobs, to, since: this.snap?.time ?? 0 };
   }
 
   // -- diplomacy ------------------------------------------------------------------------------
@@ -530,6 +550,7 @@ export class GameScreen {
       return;
     }
     this.send({ o: 'build', region, kind });
+    this.view.pending.builds.push({ region, kind, since: this.snap?.time ?? 0 });
     if (!shift) this.setPlacing(null);
   }
 
@@ -657,6 +678,12 @@ export class GameScreen {
     if (rr[6] >= 0 && pending.length - 1 >= BUILD_QUEUE) return 'build queue is full';
     if (!afford(this.resources(), buildCost(kind, this.nextLevel(kind, region)).cost)) return 'not enough resources';
     return null;
+  }
+
+  private validFor(kind: BuildingKind): Set<number> {
+    const snap = this.snap as Snapshot;
+    if (this.valid?.snap !== snap || this.valid.kind !== kind) this.valid = { snap, kind, set: this.validRegions(kind) };
+    return this.valid.set;
   }
 
   private validRegions(kind: BuildingKind): Set<number> {

@@ -112,6 +112,24 @@ describe('movement', () => {
 });
 
 describe('battles', () => {
+  it('units in a fight can only retreat, never slip past the enemy', () => {
+    const s = duel();
+    clearBlobs(s);
+    s.declareWar(1, 0);
+    s.state.regions[2].owner = 0;
+    s.state.regions[3].owner = 1;
+    place(s, 0, 'infantry', 2);
+    const attacker = place(s, 1, 'infantry', 2);
+    attacker.from = 3;
+    assert.ok(s.contested(2));
+    assert.match(s.move(1, [attacker.id], 0) ?? '', /only retreat/);
+    assert.deepEqual(attacker.path, [], 'it stays and fights');
+    const before = attacker.strength;
+    assert.equal(s.move(1, [attacker.id], 3), null, 'back the way it came');
+    assert.deepEqual(attacker.path, [3]);
+    assert.ok(attacker.strength < before, 'retreating costs');
+  });
+
   it('a fort lets an equal defender win', () => {
     const s = duel();
     clearBlobs(s);
@@ -185,9 +203,10 @@ describe('battles', () => {
     s.declareWar(0, 1);
     place(s, 1, 'infantry', 3);
     const att = place(s, 0, 'infantry', 3);
+    att.from = 2;
     s.tick(0.1);
     const before = att.strength;
-    s.move(0, [att.id], 2);
+    assert.equal(s.move(0, [att.id], 2), null);
     assert.ok(att.strength <= before * (1 - RETREAT_STRENGTH_LOSS) + 1e-9);
   });
 });
@@ -312,7 +331,7 @@ describe('economy', () => {
     rich(s);
     assert.match(s.build(0, 1, 'factory') ?? '', /needs a city/);
     assert.equal(s.build(0, 1, 'fort'), null);
-    run(s, 19);
+    run(s, buildCost('fort', 1).seconds - 1);
     assert.equal(s.state.regions[1].fort, 0);
     run(s, 2);
     assert.equal(s.state.regions[1].fort, 1);
@@ -322,17 +341,17 @@ describe('economy', () => {
     const s = duel();
     rich(s);
     const p = s.state.players[0];
-    const rs = s.state.regions[1];
+    const rs = s.state.regions[0];
     const money = p.resources.money;
-    assert.equal(s.build(0, 1, 'fort'), null);
-    assert.equal(s.build(0, 1, 'fort'), null);
-    assert.equal(s.build(0, 1, 'fort'), null);
+    assert.equal(s.build(0, 0, 'fort'), null);
+    assert.equal(s.build(0, 0, 'fort'), null);
+    assert.equal(s.build(0, 0, 'fort'), null);
     assert.deepEqual([rs.construction?.level, ...rs.buildQueue.map((c) => c.level)], [1, 2, 3]);
     const paid = [1, 2, 3].reduce((sum, l) => sum + buildCost('fort', l).cost.money, 0);
     assert.equal(money - p.resources.money, paid);
-    assert.match(s.build(0, 1, 'fort') ?? '', /highest level/);
-    assert.equal(s.build(0, 1, 'market'), null);
-    assert.match(s.build(0, 1, 'road', 0) ?? '', /queue is full/);
+    assert.match(s.build(0, 0, 'fort') ?? '', /highest level/);
+    assert.equal(s.build(0, 0, 'market'), null);
+    assert.match(s.build(0, 0, 'road', 1) ?? '', /queue is full/);
     run(s, buildCost('fort', 1).seconds + 0.5);
     assert.equal(rs.fort, 1);
     assert.equal(rs.construction?.level, 2);
@@ -343,19 +362,19 @@ describe('economy', () => {
     const s = duel();
     rich(s);
     const p = s.state.players[0];
-    const rs = s.state.regions[1];
-    s.build(0, 1, 'fort');
-    s.build(0, 1, 'market');
-    s.build(0, 1, 'fort');
+    const rs = s.state.regions[0];
+    s.build(0, 0, 'fort');
+    s.build(0, 0, 'market');
+    s.build(0, 0, 'fort');
     run(s, 5);
     const money = p.resources.money;
-    assert.equal(s.unbuild(0, 1, 0), null);
+    assert.equal(s.unbuild(0, 0, 0), null);
     assert.equal(p.resources.money - money, buildCost('fort', 1).cost.money + buildCost('fort', 2).cost.money);
     assert.equal(rs.construction?.kind, 'market');
     assert.equal(rs.construction?.progress, 0);
     assert.equal(rs.buildQueue.length, 0);
-    assert.match(s.unbuild(0, 1, 1) ?? '', /nothing to cancel/);
-    assert.match(s.unbuild(1, 1, 0) ?? '', /not your region/);
+    assert.match(s.unbuild(0, 0, 1) ?? '', /nothing to cancel/);
+    assert.match(s.unbuild(1, 0, 0) ?? '', /not your region/);
   });
 
   it('a captured region loses its builds', () => {
@@ -414,7 +433,7 @@ describe('development', () => {
   }
   /** Runs until builds are done; land cut off meanwhile (and so lost) is given back. */
   const finish = (s: ReturnType<typeof land>) => {
-    run(s, 200);
+    run(s, 400);
     for (const rs of s.state.regions) rs.owner = 0;
     s.tick(0.1);
   };
@@ -423,7 +442,7 @@ describe('development', () => {
     const s = land(3, [{}, { size: 'small' }, { size: 'large' }]);
     assert.equal(s.build(0, 1, 'market'), null);
     assert.match(s.build(0, 1, 'market') ?? '', /no free slot/);
-    for (let i = 0; i < 3; i++) assert.equal(s.build(0, 2, 'market'), null);
+    for (let i = 0; i < 2; i++) assert.equal(s.build(0, 2, 'market'), null);
     assert.match(s.build(0, 2, 'farm') ?? '', /no free slot/);
     // Capital: medium (2) + city level 3, minus the barracks.
     assert.equal(s.state.regions[0].city, START_CAPITAL_LEVEL);
@@ -502,7 +521,7 @@ describe('development', () => {
   });
 
   it('demolishing frees the slot at once, with no refund', () => {
-    const s = land(2);
+    const s = land(2, [{}, { size: 'large' }]);
     s.build(0, 1, 'market');
     s.build(0, 1, 'market');
     finish(s);
@@ -518,7 +537,7 @@ describe('development', () => {
     const s = duel();
     rich(s);
     s.build(0, 1, 'market');
-    run(s, 25);
+    run(s, buildCost('market').seconds + 5);
     s.declareWar(1, 0);
     clearBlobs(s);
     place(s, 1, 'infantry', 1);

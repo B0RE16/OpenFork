@@ -155,7 +155,7 @@ export const STACK_MIN = 2;
 
 // -- economy ----------------------------------------------------------------------------------
 
-export const BASE_YIELD: Resources = { money: 0.25, manpower: 0.15, steel: 0, oil: 0 };
+export const BASE_YIELD: Resources = { money: 0.12, manpower: 0.15, steel: 0, oil: 0 };
 export const TRAIT_YIELD: Record<Trait, Partial<Resources>> = {
   industry: { steel: 1, money: 0.3 },
   oil: { oil: 0.8 },
@@ -163,7 +163,7 @@ export const TRAIT_YIELD: Record<Trait, Partial<Resources>> = {
 };
 
 export type StartingResources = 'low' | 'normal' | 'high';
-export const STARTING: Resources = { money: 200, manpower: 120, steel: 40, oil: 20 };
+export const STARTING: Resources = { money: 120, manpower: 120, steel: 25, oil: 20 };
 export const STARTING_MULTIPLIER: Record<StartingResources, number> = { low: 0.5, normal: 1, high: 2 };
 
 // -- buildings --------------------------------------------------------------------------------
@@ -180,7 +180,7 @@ export const MAX_CITY = 5;
 /** Builds a region can have waiting behind the one under way. */
 export const BUILD_QUEUE = 3;
 /** Building slots of a region, by size; a city adds one per level. */
-export const SLOTS: Record<RegionSize, number> = { small: 1, medium: 2, large: 3 };
+export const SLOTS: Record<RegionSize, number> = { small: 1, medium: 1, large: 2 };
 /** Economic buildings only go this many hops from one of your cities. */
 export const HINTERLAND_HOPS = 2;
 /** A new city can't be founded closer than this many hops to another city. */
@@ -248,23 +248,23 @@ const res = (money: number, steel = 0): Resources => ({ money, manpower: 0, stee
 export function buildCost(kind: BuildingKind, level = 1): { cost: Resources; seconds: number } {
   switch (kind) {
     case 'farm':
-      return { cost: res(60), seconds: 20 };
+      return { cost: res(60), seconds: 60 };
     case 'mine':
-      return { cost: res(80), seconds: 25 };
+      return { cost: res(80), seconds: 75 };
     case 'well':
-      return { cost: res(90, 10), seconds: 25 };
+      return { cost: res(90, 10), seconds: 75 };
     case 'market':
-      return { cost: res(70), seconds: 20 };
+      return { cost: res(70), seconds: 60 };
     case 'city':
-      return level <= 1 ? { cost: res(400, 60), seconds: 90 } : { cost: res(120 * level, 20 * (level - 1)), seconds: 30 * level };
+      return level <= 1 ? { cost: res(1600, 240), seconds: 240 } : { cost: res(240 * level, 40 * (level - 1)), seconds: 60 * level };
     case 'fort':
-      return { cost: res(60 * level, 10 * level), seconds: 20 * level };
+      return { cost: res(60 * level, 10 * level), seconds: 60 * level };
     case 'barracks':
-      return { cost: res(80), seconds: 20 };
+      return { cost: res(80), seconds: 60 };
     case 'factory':
-      return { cost: res(150, 40), seconds: 40 };
+      return { cost: res(150, 40), seconds: 120 };
     case 'road':
-      return { cost: res(30, 5), seconds: 10 };
+      return { cost: res(30, 5), seconds: 30 };
   }
 }
 

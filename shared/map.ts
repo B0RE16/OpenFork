@@ -31,7 +31,7 @@ export interface Region {
   country: string;
   terrain: Terrain;
   traits: Trait[];
-  /** A city here at the start: its level (1-5, from the real population), or absent. */
+  /** A city here at the start: its level (1-4, from the real population), or absent. */
   city?: number;
   /** Where the city really is (pixel), for drawing the town. */
   cityAt?: [number, number];

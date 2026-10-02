@@ -417,6 +417,7 @@ export class Sim {
       const err = this.declareWar(playerId, victim);
       if (err) return err;
     }
+    let refused: string | null = null;
     for (const b of blobs) {
       // Waiting at the edge of a full region: turn back and go from where it came.
       if (b.progress >= 1) {
@@ -432,14 +433,19 @@ export class Sim {
         continue;
       }
       if (route.length && this.contested(b.region)) {
-        // Leaving a battle costs.
+        // In a fight: no slipping past the enemy, only a retreat (back where it came from, or
+        // to its own land), and that costs.
+        if (route[0] !== b.from && this.state.regions[route[0]].owner !== b.owner) {
+          refused = 'in a fight: units can only retreat to your own land';
+          continue;
+        }
         b.strength *= 1 - RETREAT_STRENGTH_LOSS;
         b.training = Math.max(0, b.training - RETREAT_TRAINING_LOSS);
       }
       b.path = route;
       b.hold = false;
     }
-    return null;
+    return refused;
   }
 
   stop(playerId: number, blobIds: number[]): string | null {
@@ -467,6 +473,7 @@ export class Sim {
     other.training = b.training;
     other.entrench = b.entrench;
     other.supply = b.supply;
+    other.from = b.from;
     b.size -= half;
     b.strength -= other.strength;
     return null;
@@ -814,6 +821,7 @@ export class Sim {
     const passing = b.path.length > 1 && rs.owner === b.owner && !hostile;
     if (!passing && this.count(b.owner, to) >= this.stackCap(to)) return;
     b.path.shift();
+    b.from = b.region;
     b.region = to;
     b.progress = 0;
     this.touch();
@@ -1065,6 +1073,7 @@ export class Sim {
       progress: 0,
       entrench: 0,
       crossedRiver: false,
+      from: -1,
       supply: 1,
       hold: false,
     };
