@@ -26,12 +26,12 @@ export class World {
     return this.regions[id].neighbors;
   }
 
-  stackCap(id: number, infra: number): number {
-    return stackCap(this.regions[id], infra);
+  stackCap(id: number, city: number, fort: number): number {
+    return stackCap(this.regions[id], city, fort);
   }
 
-  supplyCapacity(id: number, infra: number): number {
-    return supplyCapacity(this.regions[id], infra);
+  supplyCapacity(id: number, city: number): number {
+    return supplyCapacity(this.regions[id], city);
   }
 
   captureSeconds(id: number, fort: number, training: number): number {

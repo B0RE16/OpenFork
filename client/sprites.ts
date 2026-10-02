@@ -154,7 +154,33 @@ export const ICONS = {
       '.OO...OO.',
     ],
   ),
-  city: art(['OOOOO', 'OWWWO', 'OWgWO', 'OWWWO', 'OOOOO']),
+  city: art([
+    '.....OOO.',
+    '.OOO.OGO.',
+    '.OGO.OGO.',
+    'OOGOOOGOO',
+    'OGGOGOGGO',
+    'OGYOGOYGO',
+    'OGGOGOGGO',
+    'OOOOOOOOO',
+  ]),
+  farm: art(
+    ['OOOOOOOOO', 'OYYYYYYYO', 'OTTTTTTTO', 'OYYYYYYYO', 'OTTTTTTTO', 'OYYYYYYYO', 'OOOOOOOOO'],
+    { Y: '#d6b64a', T: '#7f9c43' },
+  ),
+  mine: art(
+    ['..OOOOO..', '..OGOGO..', '..OOGOO..', '...OGO...', '..OGOGO..', '.OGO.OGO.', 'OOOOOOOOO', 'OyyyyyyyO', 'OOOOOOOOO'],
+    { y: '#8c8173' },
+  ),
+  well: art(
+    ['....O....', '...OKO...', '...OKO...', '..OKOKO..', '..OKOKO..', '.OKKKKKO.', '.OKO.OKO.', 'OKO...OKO', 'OOOOOOOOO'],
+    { K: '#6b7178' },
+  ),
+  market: art(['OOOOOOOOO', 'ORWRWRWRO', 'OOOOOOOOO', '.OWWWWWO.', '.OWOOOWO.', '.OWOYOWO.', '.OOOOOOO.']),
+  road: art(
+    ['...OyO...', '...OyO...', '..OyWyO..', '..OyyyO..', '.OyyWyyO.', '.OyyyyyO.', 'OyyyWyyyO', 'OOOOOOOOO'],
+    { y: '#b59a6a' },
+  ),
   fort: art([
     'OOO.OOO.OOO',
     'OGO.OGO.OGO',
@@ -184,7 +210,6 @@ export const ICONS = {
     'OGGGGGGGO',
     'OOOOOOOOO',
   ]),
-  infra: art(['.O..O..O.', 'OGOOGOOGO', '.O..O..O.', '.O..O..O.', 'OGOOGOOGO', '.O..O..O.']),
   crate: art(
     [
       'OOOOOOOOO',
@@ -227,6 +252,35 @@ export const ICONS = {
     ),
   ],
 };
+
+// -- map art ----------------------------------------------------------------------------------
+// Drawn into the map itself, one sprite pixel per map pixel (3 km), in muted colours that sit
+// in the terrain: towns, fields, mines, derricks, market halls, roads.
+
+const LAND = {
+  R: '#9a5a43', // roof
+  r: '#7d5444',
+  H: '#d9cdb3', // wall
+  d: '#5a4a3c',
+  S: '#a7a9a6', // stone
+  s: '#6f7372',
+  Y: '#cdb35c', // wheat
+  T: '#86a04a', // green crop
+  K: '#3b3b3b',
+  k: '#8c8173', // spoil
+  A: '#b5483e', // awning
+};
+
+export const MAP_ART = {
+  houses: [art(['RRR', 'HHH', 'HdH'], LAND), art(['rrr', 'HHH', 'HHd'], LAND), art(['.R.', 'RRR', 'HdH'], LAND)],
+  tower: art(['.S.', 'SSS', 'SsS', 'SSS', 'SsS'], LAND),
+  farm: art(['YYYYYY', 'TTTTTT', 'YYYYYY', 'TTTTTT'], LAND),
+  mine: art(['.KKK.', '.K.K.', 'KKKKK', 'kkkkk'], LAND),
+  well: art(['.K.', '.K.', 'KKK', 'K.K', 'KKK'], LAND),
+  market: art(['AHAH', 'AHAH', 'HHHH', 'HdHH'], LAND),
+};
+export const ROAD_COLOR = '#c9b38a';
+export const ROAD_SHADE = '#6e5f48';
 
 // -- HUD icons ----------------------------------------------------------------------------------
 

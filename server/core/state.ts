@@ -2,6 +2,7 @@
 import type {
   BotDifficulty,
   BuildingKind,
+  EconKind,
   ProductionBuilding,
   Resources,
   UnitType,
@@ -48,12 +49,17 @@ export interface Construction {
   seconds: number;
   /** What was paid, refunded in full if cancelled. */
   cost: Resources;
+  /** A road's other end; -1 for everything else. */
+  target: number;
 }
 
 export interface RegionState {
   owner: number;
   fort: number;
-  infra: number;
+  /** City level (0: no city). */
+  city: number;
+  /** Economic buildings by kind. */
+  econ: Record<EconKind, number>;
   barracks: boolean;
   factory: boolean;
   production: Record<ProductionBuilding, ProductionLine>;
@@ -113,9 +119,11 @@ export interface SimState {
   truces: Map<string, number>;
   /** "from>to" → sim time the offer of peace expires. */
   peaceOffers: Map<string, number>;
+  /** Borders with a road (keys from pairKey on the two regions). */
+  roads: Set<string>;
 }
 
-/** Key for an unordered pair of players. */
+/** Key for an unordered pair (of players, or of regions for roads). */
 export function pairKey(a: number, b: number): string {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
 }
@@ -128,7 +136,8 @@ export function emptyRegion(): RegionState {
   return {
     owner: NEUTRAL,
     fort: 0,
-    infra: 0,
+    city: 0,
+    econ: { farm: 0, mine: 0, well: 0, market: 0 },
     barracks: false,
     factory: false,
     production: { barracks: emptyLine(), factory: emptyLine() },

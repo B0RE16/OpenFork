@@ -486,11 +486,22 @@ function regionAt(lon: number, lat: number): number {
 
 const names = new Array<string>(R).fill('');
 const traits = Array.from({ length: R }, () => new Set<Trait>());
+/** City level per region (0: none), from its largest place of 500k people or more. */
+const cityLevel = new Array<number>(R).fill(0);
+const cityAt = new Array<[number, number] | null>(R).fill(null);
+/** Big cities (a million or more) aren't farmland. */
+const bigCity = new Array<boolean>(R).fill(false);
+const levelOfPop = (pop: number) => (pop >= 8e6 ? 5 : pop >= 4e6 ? 4 : pop >= 2e6 ? 3 : pop >= 1e6 ? 2 : 1);
 for (const p of places) {
   const r = regionAt(p.lon, p.lat);
   if (r === -1) continue;
   if (!names[r] && p.pop >= 20_000) names[r] = p.name;
-  if (p.pop >= 1_000_000) traits[r].add('city');
+  if (p.pop >= 1_000_000) bigCity[r] = true;
+  if (p.pop >= 500_000 && !cityLevel[r]) {
+    cityLevel[r] = levelOfPop(p.pop);
+    const [fx, fy] = grid.toPx(p.lon, p.lat);
+    cityAt[r] = [Math.round(fx), Math.round(fy)];
+  }
 }
 for (const [, lon, lat] of INDUSTRY) {
   const r = regionAt(lon, lat);
@@ -518,7 +529,12 @@ for (const id of new Set(groupIds.map((g) => (groups.get(g) as Group).country)))
   if (play) {
     capital = regionAt(play.capital[0], play.capital[1]);
     if (capital === -1) throw new Error(`capital of ${id} is off the map`);
-    traits[capital].add('city');
+    bigCity[capital] = true;
+    if (!cityLevel[capital]) {
+      cityLevel[capital] = 1;
+      const [fx, fy] = grid.toPx(play.capital[0], play.capital[1]);
+      cityAt[capital] = [Math.round(fx), Math.round(fy)];
+    }
   }
   countries.push({ id, name: play?.name ?? countryNames.get(id) ?? id, capital, playable: !!play });
 }
@@ -531,7 +547,7 @@ const regions: Region[] = groupIds.map((g, r) => {
   const G = groups.get(g) as Group;
   const terrain = terrainOf(r);
   const t = traits[r];
-  if (terrain === 'plains' && !t.has('city') && !t.has('industry') && sumLat[r] / area[r] < 57 && counts[r][T_FOREST] / area[r] < 0.3) {
+  if (terrain === 'plains' && !bigCity[r] && !t.has('industry') && sumLat[r] / area[r] < 57 && counts[r][T_FOREST] / area[r] < 0.3) {
     t.add('farmland');
   }
   const neighbors: Neighbor[] = [...borders[r]]
@@ -548,6 +564,7 @@ const regions: Region[] = groupIds.map((g, r) => {
     country: G.country,
     terrain,
     traits: [...t].sort(),
+    ...(cityLevel[r] ? { city: cityLevel[r], cityAt: cityAt[r] as [number, number] } : {}),
     size: sizeOf(area[r]),
     area: area[r],
     x: label[r][0],

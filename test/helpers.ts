@@ -9,6 +9,8 @@ export interface RegionSpec {
   traits?: Trait[];
   size?: RegionSize;
   country?: string;
+  /** A city at the start, at this level. */
+  city?: number;
 }
 
 /**
@@ -26,6 +28,7 @@ export function makeMap(
     country: s.country ?? 'XX',
     terrain: s.terrain ?? 'plains',
     traits: s.traits ?? [],
+    ...(s.city ? { city: s.city } : {}),
     size: s.size ?? 'medium',
     area: 100,
     x: id * 10,

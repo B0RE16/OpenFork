@@ -35,7 +35,7 @@ to your friends, pick countries, and start. Bots fill the empty seats.
 | Right drag, WASD, arrows | pan |
 | Wheel | zoom |
 | X / G / H | split / merge / halt the selected units |
-| 1–4 or the build bar | placement mode for barracks / factory / fort / infrastructure: click one of your regions (Shift: place more, Esc / right click: stop); a busy region queues it |
+| 1–9 or the build bar | placement mode: farm, mine, oil well, market, city (found or expand), fort, barracks, factory, road. Click one of your regions (roads: drag across regions); Shift places more, Esc / right click stops; a busy region queues it |
 | Q / E | queue infantry / tanks at the selected region's barracks / factory |
 | V | supply overlay: hubs, reach, cut-off regions, load per region |
 | Minimap (bottom right) | click or drag to move the view |

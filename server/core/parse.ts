@@ -27,8 +27,12 @@ function order(v: unknown): Order | null {
     case 'merge':
       return isIds(v.blobs) ? { o: 'merge', blobs: v.blobs } : null;
     case 'build':
+      if (!isInt(v.region) || !BUILDING_KINDS.includes(v.kind as BuildingKind)) return null;
+      if (v.target !== undefined && !isInt(v.target)) return null;
+      return { o: 'build', region: v.region, kind: v.kind as BuildingKind, ...(v.target !== undefined ? { target: v.target as number } : {}) };
+    case 'demolish':
       return isInt(v.region) && BUILDING_KINDS.includes(v.kind as BuildingKind)
-        ? { o: 'build', region: v.region, kind: v.kind as BuildingKind }
+        ? { o: 'demolish', region: v.region, kind: v.kind as BuildingKind }
         : null;
     case 'produce':
       return isInt(v.region) && isProd(v.building) ? { o: 'produce', region: v.region, building: v.building } : null;

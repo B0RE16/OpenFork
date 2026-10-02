@@ -6,6 +6,7 @@ import type {
   StartingResources,
   UnitType,
 } from './rules.ts';
+import { BUILDING_KINDS } from './rules.ts';
 
 // -- client → server --------------------------------------------------------------------------
 
@@ -14,7 +15,10 @@ export type Order =
   | { o: 'stop'; blobs: number[] }
   | { o: 'split'; blob: number }
   | { o: 'merge'; blobs: number[] }
-  | { o: 'build'; region: number; kind: BuildingKind }
+  /** `target`: a road's other region. */
+  | { o: 'build'; region: number; kind: BuildingKind; target?: number }
+  /** Knock a building down (no refund). */
+  | { o: 'demolish'; region: number; kind: BuildingKind }
   | { o: 'produce'; region: number; building: ProductionBuilding }
   | { o: 'repeat'; region: number; building: ProductionBuilding; on: boolean }
   | { o: 'cancel'; region: number; building: ProductionBuilding }
@@ -78,9 +82,10 @@ export interface GamePlayer {
  * next region or -1, progress 0..1, entrench 0..1, supply 0..1, flags (1 hold, 2 crossed river)]. */
 export type BlobRow = [number, number, number, number, number, number, number, number, number, number, number, number];
 
-/** One region: [owner, fort, infra, flags (1 barracks, 2 factory, 4 supplied), capture by or -1,
- * capture progress 0..1, construction kind index or -1, construction progress 0..1]. */
-export type RegionRow = [number, number, number, number, number, number, number, number];
+/** One region: [owner, fort, city level, flags (1 barracks, 2 factory, 4 supplied), capture
+ * by or -1, capture progress 0..1, construction kind index or -1, construction progress 0..1,
+ * construction target (a road's other end) or -1, farms, mines, oil wells, markets]. */
+export type RegionRow = [number, number, number, number, number, number, number, number, number, number, number, number, number];
 
 export interface PlayerRow {
   alive: boolean;
@@ -122,8 +127,10 @@ export interface Snapshot {
   production: ProductionView[];
   /** The receiving player's moving units: [blob id, ...remaining regions]. */
   routes: number[][];
-  /** The receiving player's waiting builds: [region, building index...]. */
+  /** The receiving player's waiting builds: [region, kind index, target, kind index, target...]. */
   builds: number[][];
+  /** Borders with a road. */
+  roads: Array<[number, number]>;
   events: GameEvent[];
   /** Pairs of countries at war. */
   wars: Array<[number, number]>;
@@ -141,5 +148,5 @@ export type ServerMessage =
   | { t: 'snap'; snap: Snapshot }
   | { t: 'game.over'; winner: number | null };
 
-export const BUILDING_INDEX: readonly BuildingKind[] = ['barracks', 'factory', 'fort', 'infra'];
+export const BUILDING_INDEX: readonly BuildingKind[] = BUILDING_KINDS;
 export const UNIT_INDEX: readonly UnitType[] = ['infantry', 'tank'];

@@ -116,7 +116,9 @@ export class Game {
       case 'merge':
         return s.merge(id, order.blobs);
       case 'build':
-        return s.build(id, order.region, order.kind);
+        return s.build(id, order.region, order.kind, order.target ?? -1);
+      case 'demolish':
+        return s.demolish(id, order.region, order.kind);
       case 'produce':
         return s.produce(id, order.region, order.building);
       case 'repeat':
@@ -170,12 +172,17 @@ export class Game {
     const regions: RegionRow[] = st.regions.map((r) => [
       r.owner,
       r.fort,
-      r.infra,
+      r.city,
       (r.barracks ? 1 : 0) | (r.factory ? 2 : 0) | (r.supplied ? 4 : 0),
       r.capture ? r.capture.by : -1,
       r.capture ? round(r.capture.progress, 2) : 0,
       r.construction ? BUILDING_INDEX.indexOf(r.construction.kind) : -1,
       r.construction ? round(r.construction.progress / r.construction.seconds, 2) : 0,
+      r.construction ? r.construction.target : -1,
+      r.econ.farm,
+      r.econ.mine,
+      r.econ.well,
+      r.econ.market,
     ]);
     const blobs: BlobRow[] = [];
     for (const b of st.blobs.values()) {
@@ -200,7 +207,8 @@ export class Game {
     const truces = [...st.truces]
       .filter(([, until]) => until > st.time)
       .map(([k, until]) => [...pair(k, ':'), Math.ceil(until - st.time)] as [number, number, number]);
-    return { time: round(st.time, 1), players, regions, blobs, events, wars, offers, truces };
+    const roads = [...st.roads].map((k) => pair(k, ':'));
+    return { time: round(st.time, 1), players, regions, blobs, events, wars, offers, truces, roads };
   }
 
   /** The remaining route of each of `player`'s moving units: [blob id, ...regions]. */
@@ -216,7 +224,7 @@ export class Game {
     if (player === null) return [];
     const out: number[][] = [];
     this.sim.state.regions.forEach((r, i) => {
-      if (r.owner === player && r.buildQueue.length) out.push([i, ...r.buildQueue.map((c) => BUILDING_INDEX.indexOf(c.kind))]);
+      if (r.owner === player && r.buildQueue.length) out.push([i, ...r.buildQueue.flatMap((c) => [BUILDING_INDEX.indexOf(c.kind), c.target])]);
     });
     return out;
   }

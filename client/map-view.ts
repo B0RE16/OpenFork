@@ -3,8 +3,8 @@
 import { decodeGrid, type GameMap, WATER } from '../shared/map.ts';
 import type { BlobRow, GamePlayer, RegionRow, Snapshot } from '../shared/protocol.ts';
 import { UNIT_INDEX } from '../shared/protocol.ts';
-import { SUPPLY_RANGE, supplyCapacity, UNITS } from '../shared/rules.ts';
-import { blit, blitCentred, FRAME_H, FRAME_W, ICONS, INK, pixelDigits, type Sprite, unitFrame } from './sprites.ts';
+import { ROAD_SUPPLY_HOP, supplyCapacity, supplyReach, UNITS } from '../shared/rules.ts';
+import { blit, blitCentred, FRAME_H, FRAME_W, ICONS, INK, MAP_ART, pixelDigits, ROAD_COLOR, ROAD_SHADE, type Sprite, unitFrame } from './sprites.ts';
 
 export interface Camera {
   x: number;
@@ -65,8 +65,15 @@ export class MapView {
   expanded: string | null = null;
   /** Placement mode: where the building can go, and the region under the cursor. */
   placement: { valid: Set<number>; hover: number } | null = null;
+  /** Road tool: the regions dragged across so far, drawn as a dashed line. */
+  roadPreview: number[] | null = null;
   private readonly placeLayer: HTMLCanvasElement;
   private placeKey = '';
+  /** Towns, buildings and roads, painted at map resolution (they zoom with the terrain). */
+  private readonly developLayer: HTMLCanvasElement;
+  private developKey = '';
+  /** Per region: free spots for building sprites, nearest the label point first. */
+  private readonly spots = new Map<number, Array<[number, number]>>();
 
   constructor(canvas: HTMLCanvasElement, map: GameMap, terrain: HTMLImageElement) {
     this.canvas = canvas;
@@ -78,6 +85,7 @@ export class MapView {
     this.highlight = offscreen(map.width, map.height);
     this.supplyLayer = offscreen(map.width, map.height);
     this.placeLayer = offscreen(map.width, map.height);
+    this.developLayer = offscreen(map.width, map.height);
     // Border pixels never change; only who owns each side does.
     const W = map.width;
     const edges: number[] = [];
@@ -259,27 +267,32 @@ export class MapView {
   }
 
   /** Your supply network, worked out the way the server does (DESIGN.md §7). */
-  private supplyInfo(snap: Snapshot, players: GamePlayer[], you: number): SupplyInfo {
+  private supplyInfo(snap: Snapshot, _players: GamePlayer[], you: number): SupplyInfo {
     const regions = snap.regions;
-    const capital = this.map.countries.find((c) => c.id === players[you]?.country)?.capital ?? -1;
-    const depth = new Map<number, number>();
+    const roads = new Set(snap.roads.map(([a, b]) => `${Math.min(a, b)}:${Math.max(a, b)}`));
+    // Every city of yours reaches 3 + its level hops; a road border is half a hop. In half hops.
+    const left = new Map<number, number>();
     const hubs: number[] = [];
-    const queue: number[] = [];
+    const buckets: number[][] = [];
     regions.forEach((r, i) => {
-      if (r[0] === you && (i === capital || this.map.regions[i].traits.includes('city'))) {
-        hubs.push(i);
-        depth.set(i, 0);
-        queue.push(i);
+      if (r[0] !== you || r[2] <= 0) return;
+      hubs.push(i);
+      const reach = supplyReach(r[2]) * 2;
+      if (reach > (left.get(i) ?? -1)) {
+        left.set(i, reach);
+        (buckets[reach] ??= []).push(i);
       }
     });
-    for (let q = 0; q < queue.length; q++) {
-      const u = queue[q];
-      const d = depth.get(u) as number;
-      if (d >= SUPPLY_RANGE) continue;
-      for (const n of this.map.regions[u].neighbors) {
-        if (regions[n.id][0] === you && !depth.has(n.id)) {
-          depth.set(n.id, d + 1);
-          queue.push(n.id);
+    for (let h = buckets.length - 1; h >= 0; h--) {
+      for (const u of buckets[h] ?? []) {
+        if (left.get(u) !== h) continue;
+        for (const n of this.map.regions[u].neighbors) {
+          if (regions[n.id][0] !== you) continue;
+          const next = h - (roads.has(`${Math.min(u, n.id)}:${Math.max(u, n.id)}`) ? ROAD_SUPPLY_HOP * 2 : 2);
+          if (next >= 0 && next > (left.get(n.id) ?? -1)) {
+            left.set(n.id, next);
+            (buckets[next] ??= []).push(n.id);
+          }
         }
       }
     }
@@ -288,11 +301,11 @@ export class MapView {
       if (b[1] !== you || b[8] > 0) continue;
       need.set(b[6], (need.get(b[6]) ?? 0) + b[4] * UNITS[UNIT_INDEX[b[2]]].supplyNeed);
     }
-    return { depth, hubs, need };
+    return { left, hubs, need };
   }
 
   private updateSupplyLayer(snap: Snapshot, players: GamePlayer[], you: number): void {
-    const key = `${you}|${snap.regions.map((r) => r[0]).join(',')}`;
+    const key = `${you}|${snap.regions.map((r) => `${r[0]}.${r[2]}`).join(',')}|${snap.roads.length}`;
     this.supply = this.supplyInfo(snap, players, you);
     if (key === this.supplyKey) return;
     this.supplyKey = key;
@@ -303,8 +316,8 @@ export class MapView {
     const colorOfRegion = new Map<number, [number, number, number]>();
     snap.regions.forEach((r, i) => {
       if (r[0] !== you) return;
-      const depth = this.supply?.depth.get(i);
-      colorOfRegion.set(i, depth === undefined ? [255, 90, 90] : depth >= SUPPLY_RANGE ? [255, 179, 71] : [79, 209, 255]);
+      const left = this.supply?.left.get(i);
+      colorOfRegion.set(i, left === undefined ? [255, 90, 90] : left < 2 ? [255, 179, 71] : [79, 209, 255]);
     });
     for (let i = 0; i < this.grid.length; i++) {
       const c = colorOfRegion.get(this.grid[i]);
@@ -317,6 +330,112 @@ export class MapView {
       d[i * 4 + 3] = 150;
     }
     ctx.putImageData(img, 0, 0);
+  }
+
+  /** Where a region's town (or the hub of its roads) is: the real city, else the label point. */
+  private townAt(region: number): [number, number] {
+    const r = this.map.regions[region];
+    return r.cityAt ?? [r.x, r.y];
+  }
+
+  private landOf(x: number, y: number): number {
+    if (x < 0 || y < 0 || x >= this.map.width || y >= this.map.height) return WATER;
+    return this.grid[y * this.map.width + x];
+  }
+
+  /** Spots in a region where a 6×5 sprite fits on its own land, clear of the town. */
+  private spotsIn(region: number): Array<[number, number]> {
+    let list = this.spots.get(region);
+    if (list) return list;
+    const r = this.map.regions[region];
+    const [tx, ty] = this.townAt(region);
+    const out: Array<[number, number, number]> = [];
+    const fits = (x: number, y: number) => {
+      for (let dy = -1; dy <= 5; dy++) for (let dx = -1; dx <= 6; dx++) if (this.landOf(x + dx, y + dy) !== region) return false;
+      return true;
+    };
+    for (let y = r.y - 60; y <= r.y + 60; y += 7) {
+      for (let x = r.x - 60; x <= r.x + 60; x += 8) {
+        // A little seeded jitter so fields don't sit on a perfect grid.
+        const j = (x * 73856093) ^ (y * 19349663);
+        const px = x + (j & 3) - 1;
+        const py = y + ((j >> 2) & 3) - 1;
+        if (Math.hypot(px + 3 - tx, py + 2 - ty) < 14) continue;
+        if (Math.abs(px + 3 - r.x) < 22 && Math.abs(py + 2 - r.y) < 6) continue; // the name
+        if (fits(px, py)) out.push([px, py, Math.hypot(px - r.x, py - r.y)]);
+      }
+    }
+    out.sort((a, b) => a[2] - b[2]);
+    list = out.map(([x, y]) => [x, y]);
+    this.spots.set(region, list);
+    return list;
+  }
+
+  /** Repaints towns, economic buildings and roads when any of them changed. */
+  private updateDevelopLayer(snap: Snapshot): void {
+    let key = `${snap.roads.length}|`;
+    for (const r of snap.regions) key += `${r[2]}${r[9]}${r[10]}${r[11]}${r[12]},`;
+    if (key === this.developKey) return;
+    this.developKey = key;
+    const ctx = this.developLayer.getContext('2d') as CanvasRenderingContext2D;
+    ctx.clearRect(0, 0, this.map.width, this.map.height);
+    ctx.imageSmoothingEnabled = false;
+
+    // Roads: a pixel line between the two towns, with a darker edge under it.
+    for (const [a, b] of snap.roads) {
+      const [x0, y0] = this.townAt(a);
+      const [x1, y1] = this.townAt(b);
+      const n = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+      for (let i = 0; i <= n; i++) {
+        const x = Math.round(x0 + ((x1 - x0) * i) / n);
+        const y = Math.round(y0 + ((y1 - y0) * i) / n);
+        if (this.landOf(x, y) === WATER) continue;
+        ctx.fillStyle = ROAD_SHADE;
+        ctx.fillRect(x, y + 1, 1, 1);
+        ctx.fillStyle = ROAD_COLOR;
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+
+    snap.regions.forEach((r, i) => {
+      // Economic buildings, nearest the middle of the region first.
+      const sprites: Sprite[] = [];
+      for (let k = 0; k < r[9]; k++) sprites.push(MAP_ART.farm);
+      for (let k = 0; k < r[10]; k++) sprites.push(MAP_ART.mine);
+      for (let k = 0; k < r[11]; k++) sprites.push(MAP_ART.well);
+      for (let k = 0; k < r[12]; k++) sprites.push(MAP_ART.market);
+      if (sprites.length) {
+        const spots = this.spotsIn(i);
+        sprites.forEach((sprite, k) => {
+          const spot = spots[k];
+          if (spot) ctx.drawImage(sprite, spot[0], spot[1]);
+        });
+      }
+      // The town: houses spiralling out from the real city, towers in the middle of big ones.
+      const level = r[2];
+      if (level <= 0) return;
+      const [cx, cy] = this.townAt(i);
+      const houses = 2 + 3 * level;
+      let placed = 0;
+      let [gx, gy, dx, dy, leg, steps, turns] = [0, 0, 1, 0, 1, 0, 0];
+      for (let guard = 0; placed < houses && guard < 200; guard++) {
+        const x = cx + gx * 4 - 1;
+        const y = cy + gy * 4 - 1;
+        if (this.landOf(x + 1, y + 1) === i) {
+          const tall = level >= 3 && placed < level - 1;
+          const sprite = tall ? MAP_ART.tower : MAP_ART.houses[(gx * 7 + gy * 3 + 99) % MAP_ART.houses.length];
+          ctx.drawImage(sprite, x, tall ? y - 2 : y);
+          placed++;
+        }
+        gx += dx;
+        gy += dy;
+        if (++steps === leg) {
+          steps = 0;
+          [dx, dy] = [-dy, dx];
+          if (++turns % 2 === 0) leg++;
+        }
+      }
+    });
   }
 
   /** Placement: valid regions tinted green, everything else dimmed. */
@@ -407,6 +526,10 @@ export class MapView {
     ctx.globalAlpha = showSupply ? 0.35 : 1;
     ctx.drawImage(this.territory, 0, 0);
     ctx.globalAlpha = 1;
+    this.updateDevelopLayer(snap);
+    ctx.imageSmoothingEnabled = this.cam.scale < 1;
+    ctx.drawImage(this.developLayer, 0, 0);
+    ctx.imageSmoothingEnabled = false;
     if (showSupply) ctx.drawImage(this.supplyLayer, 0, 0);
     if (place) {
       this.updatePlaceLayer(place.valid);
@@ -417,6 +540,14 @@ export class MapView {
     this.drawGrid(w, h);
 
     this.drawRegions(snap, players, you);
+    if (this.roadPreview && this.roadPreview.length > 1) {
+      const px = this.pixel();
+      const pts = this.roadPreview.map((r) => this.toScreen(...this.townAt(r)));
+      for (let i = 0; i + 1 < pts.length; i++) {
+        dottedLine(ctx, pts[i][0], pts[i][1] + px, pts[i + 1][0], pts[i + 1][1] + px, INK, px + 1);
+        dottedLine(ctx, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], ROAD_COLOR, px + 1);
+      }
+    }
     this.drawBlobs(snap, players, selected, you);
 
     if (box) {
@@ -484,14 +615,12 @@ export class MapView {
       const y = Math.round(fy);
       if (x < -80 || y < -80 || x > this.canvas.clientWidth + 80 || y > this.canvas.clientHeight + 80) continue;
 
-      // Icons in a row above the units: capital/city, fort, barracks, factory, infrastructure.
+      // Icons in a row above the units: capital, fort, barracks, factory (towns are on the map).
       const icons: Sprite[] = [];
       if (capitals.has(region.id)) icons.push(ICONS.capital);
-      else if (region.traits.includes('city')) icons.push(ICONS.city);
       if (rr[1] > 0) for (let i = 0; i < rr[1]; i++) icons.push(ICONS.fort);
       if (rr[3] & 1) icons.push(ICONS.barracks);
       if (rr[3] & 2) icons.push(ICONS.factory);
-      if (rr[2] > 0) icons.push(ICONS.infra);
       const showIcons = icons.length > 0 && zoom >= 0.5;
       const iconBottom = y + tokenTop - 2;
       if (showIcons) {
@@ -851,8 +980,8 @@ const digitScale = (px: number) => (px >= 2 ? 3 : 2);
 const plateHeight = (px: number) => 5 * digitScale(px) + 5;
 
 export interface SupplyInfo {
-  /** Hops from the nearest hub, for your regions in reach. */
-  depth: Map<number, number>;
+  /** Reach left (in half hops) in each of your regions a hub supplies. */
+  left: Map<number, number>;
   hubs: number[];
   /** Supply your units standing in each region need. */
   need: Map<number, number>;

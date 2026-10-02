@@ -7,10 +7,25 @@ import {
   BASE_YIELD,
   BROKE_LOSS,
   BROKE_TRAINING,
+  BUILD_NEEDS,
   BUILD_QUEUE,
   buildCost,
   CAPTURE_DECAY,
   canBuildOn,
+  CITY_YIELD,
+  ECON_KINDS,
+  econYield,
+  type EconKind,
+  FOUND_CITY_MIN_HOPS,
+  HINTERLAND_HOPS,
+  MAX_CITY,
+  MAX_FORT,
+  NEUTRAL_CITY_LEVEL,
+  ROAD_SPEED,
+  ROAD_SUPPLY_HOP,
+  slotsOf,
+  START_CAPITAL_LEVEL,
+  supplyReach,
   CROSS_SECONDS,
   CUT_OFF_SECONDS,
   DAMAGE_RATE,
@@ -21,8 +36,6 @@ import {
   ENTRENCH_SECONDS,
   FORT_BONUS,
   FORT_MOVE_PENALTY,
-  INFRA_MOVE_BONUS,
-  MAX_LEVEL,
   MAX_TRAINING,
   MERGE_PENALTY,
   MIN_STRENGTH,
@@ -41,7 +54,6 @@ import {
   STARTING,
   STARTING_MULTIPLIER,
   type StartingResources,
-  SUPPLY_RANGE,
   TERRAIN_MOVE,
   TICK_MS,
   TRAINING_DAMAGE,
@@ -54,6 +66,7 @@ import {
 } from '../../shared/rules.ts';
 import {
   type Blob,
+  type Construction,
   emptyLine,
   pairKey,
   emptyRegion,
@@ -99,7 +112,13 @@ export class Sim {
       warActivity: new Map(),
       truces: new Map(),
       peaceOffers: new Map(),
+      roads: new Set(),
     };
+    // Cities: real size in the countries being played, small elsewhere (no free metropolis).
+    const played = new Set(players.map((p) => p.country));
+    world.regions.forEach((r, i) => {
+      if (r.city) this.state.regions[i].city = played.has(r.country) ? r.city : NEUTRAL_CITY_LEVEL;
+    });
     const taken = new Set<number>();
     players.forEach((p, id) => {
       const country = world.map.countries.find((c) => c.id === p.country);
@@ -147,7 +166,9 @@ export class Sim {
       this.state.regions[r].owner = p.id;
       taken.add(r);
     }
-    this.state.regions[p.capital].barracks = true;
+    const cap = this.state.regions[p.capital];
+    cap.barracks = true;
+    cap.city = Math.max(cap.city, START_CAPITAL_LEVEL);
     let placed = 0;
     for (const r of owned) {
       while (placed < START_INFANTRY && this.count(p.id, r) < this.stackCap(r)) {
@@ -199,7 +220,8 @@ export class Sim {
   }
 
   stackCap(region: number): number {
-    return this.world.stackCap(region, this.state.regions[region].infra);
+    const rs = this.state.regions[region];
+    return this.world.stackCap(region, rs.city, rs.fort);
   }
 
   /** Owners with blobs standing in a region. */
@@ -328,8 +350,10 @@ export class Sim {
     if (!edge) return Infinity;
     const dest = this.state.regions[to];
     let speed = UNITS[type].speed * TERRAIN_MOVE[this.world.regions[to].terrain];
-    if (dest.owner === owner) speed *= 1 + INFRA_MOVE_BONUS * dest.infra;
-    else if (this.atWar(dest.owner, owner)) speed *= Math.max(0.3, ENEMY_LAND_MOVE - FORT_MOVE_PENALTY * dest.fort);
+    if (this.hasRoad(from, to)) speed /= ROAD_SPEED;
+    if (dest.owner === owner) {
+      // Home ground: no penalty.
+    } else if (this.atWar(dest.owner, owner)) speed *= Math.max(0.3, ENEMY_LAND_MOVE - FORT_MOVE_PENALTY * dest.fort);
     return (CROSS_SECONDS * (edge.dist / this.world.hop)) / speed;
   }
 
@@ -478,42 +502,119 @@ export class Sim {
     return null;
   }
 
-  build(playerId: number, region: number, kind: BuildingKind): string | null {
+  /** Builds a region has: the one under way, then the ones waiting. */
+  pending(rs: RegionState): Construction[] {
+    return rs.construction ? [rs.construction, ...rs.buildQueue] : [];
+  }
+
+  hasRoad(a: number, b: number): boolean {
+    return this.state.roads.has(pairKey(a, b));
+  }
+
+  /** Slots taken in a region, counting builds under way and waiting. */
+  slotsUsed(rs: RegionState): number {
+    let n = ECON_KINDS.reduce((sum, k) => sum + rs.econ[k], 0) + (rs.fort > 0 ? 1 : 0) + (rs.barracks ? 1 : 0) + (rs.factory ? 1 : 0);
+    let fortPending = rs.fort > 0;
+    for (const c of this.pending(rs)) {
+      if (c.kind === 'fort') {
+        if (!fortPending) n++;
+        fortPending = true;
+      } else if (c.kind !== 'city' && c.kind !== 'road') n++;
+    }
+    return n;
+  }
+
+  /** The level the next fort or city build in a region would reach, counting queued ones. */
+  nextLevel(rs: RegionState, kind: BuildingKind): number {
+    const pending = this.pending(rs).filter((c) => c.kind === kind).length;
+    if (kind === 'fort') return rs.fort + pending + 1;
+    if (kind === 'city') return rs.city + pending + 1;
+    return 1;
+  }
+
+  /** Regions within `hops` of `region` (itself included), by hop count through any land. */
+  near(region: number, hops: number): number[] {
+    const seen = new Map([[region, 0]]);
+    const queue = [region];
+    for (let q = 0; q < queue.length; q++) {
+      const u = queue[q];
+      const d = seen.get(u) as number;
+      if (d >= hops) continue;
+      for (const e of this.world.neighbors(u)) {
+        if (!seen.has(e.id)) {
+          seen.set(e.id, d + 1);
+          queue.push(e.id);
+        }
+      }
+    }
+    return queue;
+  }
+
+  /** Within reach of one of `player`'s cities (economic buildings go only there). */
+  nearCity(player: number, region: number): boolean {
+    return this.near(region, HINTERLAND_HOPS).some((r) => this.state.regions[r].owner === player && this.state.regions[r].city > 0);
+  }
+
+  /** Why a build would be refused, resources aside; null if it's allowed. */
+  whyNotBuild(playerId: number, region: number, kind: BuildingKind, target = -1): string | null {
     const p = this.player(playerId);
     const rs = this.state.regions[region];
     if (!p?.alive) return 'you are not in the game';
     if (!rs || rs.owner !== playerId) return 'not your region';
     if (!rs.supplied) return 'region is out of supply';
-    if (!canBuildOn(kind, this.world.regions[region].traits)) return `can't build a ${kind} here`;
-    const level = this.nextLevel(rs, kind);
-    if (level > MAX_LEVEL[kind]) return 'already at the highest level';
+    const map = this.world.regions[region];
+    if (!canBuildOn(kind, map, rs.city)) return `a ${kind} needs ${BUILD_NEEDS[kind]}`;
+    const pending = this.pending(rs);
+    if (ECON_KINDS.includes(kind as EconKind) && !this.nearCity(playerId, region)) {
+      return `only within ${HINTERLAND_HOPS} regions of one of your cities`;
+    }
+    if (kind === 'fort' && this.nextLevel(rs, kind) > MAX_FORT) return 'the fort is at its highest level';
+    if ((kind === 'barracks' || kind === 'factory') && (rs[kind] || pending.some((c) => c.kind === kind))) return `already has a ${kind}`;
+    if (kind === 'city') {
+      const level = this.nextLevel(rs, kind);
+      if (level > MAX_CITY) return 'the city is at its highest level';
+      const tooClose = this.near(region, FOUND_CITY_MIN_HOPS - 1).some((r) => r !== region && this.state.regions[r].city > 0);
+      if (level === 1 && tooClose) return 'too close to another city';
+    }
+    if (kind === 'road') {
+      if (!this.world.edge(region, target)) return 'a road needs a neighbouring region';
+      if (this.state.regions[target]?.owner !== playerId) return 'roads join two of your regions';
+      const queued = (r: number, t: number) => this.pending(this.state.regions[r]).some((c) => c.kind === 'road' && c.target === t);
+      if (this.hasRoad(region, target) || queued(region, target) || queued(target, region)) return 'there is a road already';
+    }
+    const needsSlot = kind !== 'city' && kind !== 'road' && !(kind === 'fort' && (rs.fort > 0 || pending.some((c) => c.kind === 'fort')));
+    if (needsSlot && this.slotsUsed(rs) >= slotsOf(map, rs.city)) return 'no free slot';
     if (rs.construction && rs.buildQueue.length >= BUILD_QUEUE) return 'build queue is full';
+    return null;
+  }
+
+  build(playerId: number, region: number, kind: BuildingKind, target = -1): string | null {
+    const why = this.whyNotBuild(playerId, region, kind, target);
+    if (why) return why;
+    const p = this.state.players[playerId];
+    const rs = this.state.regions[region];
+    const level = this.nextLevel(rs, kind);
     const { cost, seconds } = buildCost(kind, level);
     if (!this.pay(p, cost)) return 'not enough resources';
-    const c = { kind, level, progress: 0, seconds, cost };
+    const c: Construction = { kind, level, progress: 0, seconds, cost, target: kind === 'road' ? target : -1 };
     if (rs.construction) rs.buildQueue.push(c);
     else rs.construction = c;
     return null;
   }
 
-  /** The level the next build of `kind` in a region would reach, counting queued ones. */
-  nextLevel(rs: RegionState, kind: BuildingKind): number {
-    const pending = [rs.construction, ...rs.buildQueue].filter((c) => c?.kind === kind).length;
-    return this.levelOf(rs, kind) + pending + 1;
-  }
-
   /**
-   * Cancels a build (0: the one under way, 1+: waiting) and every later build of the same
-   * kind, whose levels depended on it. Everything cancelled is refunded in full.
+   * Cancels a build (0: the one under way, 1+: waiting), refunded in full. Cancelling a fort
+   * or city level also cancels the higher levels queued after it.
    */
   unbuild(playerId: number, region: number, index: number): string | null {
     const rs = this.state.regions[region];
     if (!this.player(playerId)?.alive) return 'you are not in the game';
     if (!rs || rs.owner !== playerId) return 'not your region';
-    const all = rs.construction ? [rs.construction, ...rs.buildQueue] : [];
+    const all = this.pending(rs);
     const target = all[index];
     if (!target) return 'nothing to cancel';
-    const drop = new Set(all.filter((c, i) => i >= index && c.kind === target.kind));
+    const levelled = target.kind === 'fort' || target.kind === 'city';
+    const drop = new Set(all.filter((c, i) => c === target || (levelled && i > index && c.kind === target.kind)));
     for (const c of drop) this.refund(this.state.players[playerId], c.cost);
     const keep = all.filter((c) => !drop.has(c));
     if (rs.construction && drop.has(rs.construction)) {
@@ -524,10 +625,33 @@ export class Sim {
     return null;
   }
 
-  levelOf(rs: RegionState, kind: BuildingKind): number {
-    if (kind === 'fort') return rs.fort;
-    if (kind === 'infra') return rs.infra;
-    return rs[kind] ? 1 : 0;
+  /** Knocks a building down at once, with no refund, freeing its slot (a fort goes entirely). */
+  demolish(playerId: number, region: number, kind: BuildingKind): string | null {
+    const rs = this.state.regions[region];
+    if (!this.player(playerId)?.alive) return 'you are not in the game';
+    if (!rs || rs.owner !== playerId) return 'not your region';
+    if (ECON_KINDS.includes(kind as EconKind)) {
+      const k = kind as EconKind;
+      if (rs.econ[k] <= 0) return `no ${kind} here`;
+      rs.econ[k]--;
+    } else if (kind === 'fort') {
+      if (rs.fort <= 0) return 'no fort here';
+      rs.fort = 0;
+      // Queued fort levels were built on this one.
+      const forts = this.pending(rs).filter((c) => c.kind === 'fort');
+      for (const c of forts) this.refund(this.state.players[playerId], c.cost);
+      const keep = this.pending(rs).filter((c) => c.kind !== 'fort');
+      if (rs.construction?.kind === 'fort') {
+        rs.construction = keep.shift() ?? null;
+        if (rs.construction) rs.construction.progress = 0;
+      } else keep.shift();
+      rs.buildQueue = keep;
+    } else if (kind === 'barracks' || kind === 'factory') {
+      if (!rs[kind]) return `no ${kind} here`;
+      rs[kind] = false;
+      rs.production[kind] = emptyLine();
+    } else return `a ${kind} can't be demolished`;
+    return null;
   }
 
   produce(playerId: number, region: number, building: ProductionBuilding): string | null {
@@ -582,25 +706,28 @@ export class Sim {
   private updateSupply(): void {
     const regions = this.state.regions;
     for (const rs of regions) rs.supplied = false;
-    for (const p of this.state.players) {
-      if (!p.alive) continue;
-      const depth = new Map<number, number>();
-      const queue: number[] = [];
-      regions.forEach((rs, i) => {
-        if (rs.owner === p.id && (i === p.capital || this.world.regions[i].traits.includes('city'))) {
-          depth.set(i, 0);
-          queue.push(i);
-        }
-      });
-      for (let q = 0; q < queue.length; q++) {
-        const u = queue[q];
-        const d = depth.get(u) as number;
+    // Every city is a hub reaching 3 + its level hops through its owner's land; a road
+    // border counts half a hop. Work in half hops: the best reach left wins.
+    const left = new Array<number>(regions.length).fill(-1);
+    const buckets: number[][] = [];
+    regions.forEach((rs, i) => {
+      if (rs.owner === NEUTRAL || rs.city <= 0 || !this.state.players[rs.owner]?.alive) return;
+      const reach = supplyReach(rs.city) * 2;
+      if (reach > left[i]) {
+        left[i] = reach;
+        (buckets[reach] ??= []).push(i);
+      }
+    });
+    for (let r = buckets.length - 1; r >= 0; r--) {
+      for (const u of buckets[r] ?? []) {
+        if (left[u] !== r) continue;
         regions[u].supplied = true;
-        if (d >= SUPPLY_RANGE) continue;
         for (const e of this.world.neighbors(u)) {
-          if (regions[e.id].owner === p.id && !depth.has(e.id)) {
-            depth.set(e.id, d + 1);
-            queue.push(e.id);
+          if (regions[e.id].owner !== regions[u].owner) continue;
+          const next = r - (this.hasRoad(u, e.id) ? ROAD_SUPPLY_HOP * 2 : 2);
+          if (next >= 0 && next > left[e.id]) {
+            left[e.id] = next;
+            (buckets[next] ??= []).push(e.id);
           }
         }
       }
@@ -616,7 +743,7 @@ export class Sim {
       const rs = regions[r];
       if (rs.owner !== owner || !rs.supplied) return 0;
       const n = need.get(`${owner}:${r}`) ?? 0;
-      return n <= 0 ? 1 : Math.min(1, this.world.supplyCapacity(r, rs.infra) / n);
+      return n <= 0 ? 1 : Math.min(1, this.world.supplyCapacity(r, rs.city) / n);
     };
     for (const b of this.state.blobs.values()) {
       if (regions[b.region].owner === b.owner) {
@@ -830,8 +957,11 @@ export class Sim {
     this.state.regions.forEach((rs, i) => {
       if (rs.owner === NEUTRAL || !rs.supplied || this.hostileIn(i, rs.owner)) return;
       const p = players[rs.owner];
+      const region = this.world.regions[i];
       add(p.income, BASE_YIELD);
-      for (const t of this.world.regions[i].traits) add(p.income, TRAIT_YIELD[t]);
+      for (const t of region.traits) add(p.income, TRAIT_YIELD[t]);
+      for (const k of ECON_KINDS) if (rs.econ[k]) add(p.income, econYield(k, region), rs.econ[k]);
+      if (rs.city) add(p.income, CITY_YIELD, rs.city);
     });
     for (const b of this.state.blobs.values()) players[b.owner].upkeep += b.size * UNITS[b.type].upkeep;
     for (const p of players) {
@@ -854,10 +984,18 @@ export class Sim {
     if (!c) return;
     c.progress += dt;
     if (c.progress < c.seconds) return;
-    if (c.kind === 'fort') rs.fort = c.level;
-    else if (c.kind === 'infra') rs.infra = c.level;
-    else rs[c.kind] = true;
     rs.construction = rs.buildQueue.shift() ?? null;
+    if (c.kind === 'fort') rs.fort = c.level;
+    else if (c.kind === 'city') rs.city = c.level;
+    else if (c.kind === 'barracks' || c.kind === 'factory') rs[c.kind] = true;
+    else if (c.kind === 'road') {
+      // The other end changed hands meanwhile: give the money back instead.
+      if (this.state.regions[c.target].owner !== rs.owner) {
+        this.refund(this.state.players[rs.owner], c.cost);
+        return;
+      }
+      this.state.roads.add(pairKey(region, c.target));
+    } else rs.econ[c.kind]++;
     this.events.push({ kind: 'built', region, owner: rs.owner, building: c.kind, level: c.level });
   }
 
@@ -961,6 +1099,6 @@ export class Sim {
   }
 }
 
-function add(into: Resources, from: Partial<Resources>): void {
-  for (const k of RESOURCES) into[k] += from[k] ?? 0;
+function add(into: Resources, from: Partial<Resources>, times = 1): void {
+  for (const k of RESOURCES) into[k] += (from[k] ?? 0) * times;
 }

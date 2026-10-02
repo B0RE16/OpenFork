@@ -9,7 +9,8 @@ import {
   MERGE_PENALTY,
   RETREAT_STRENGTH_LOSS,
   START_INFANTRY,
-  SUPPLY_RANGE,
+  START_CAPITAL_LEVEL,
+  supplyReach,
   UNITS,
 } from '../shared/rules.ts';
 import { NEUTRAL } from '../server/core/state.ts';
@@ -240,7 +241,8 @@ describe('training, digging in, merging', () => {
 });
 
 describe('supply', () => {
-  it('reaches SUPPLY_RANGE regions from a hub', () => {
+  it('a city supplies 3 + its level regions away (the capital starts at level 3)', () => {
+    const SUPPLY_RANGE = supplyReach(START_CAPITAL_LEVEL);
     const n = SUPPLY_RANGE + 3;
     const map = makeMap(Array.from({ length: n }, () => ({})), chain(n), [{ id: 'A', capital: 0 }]);
     const s = sim(map, ['A']);
@@ -264,7 +266,7 @@ describe('supply', () => {
     assert.ok(b.strength < b.size);
   });
 
-  it('too many blobs for the capacity get partial supply; infrastructure helps', () => {
+  it('too many blobs for the capacity get partial supply; a bigger city helps', () => {
     const s = duel();
     clearBlobs(s);
     const cap = s.stackCap(0);
@@ -273,7 +275,7 @@ describe('supply', () => {
     const b = [...s.state.blobs.values()][0];
     const before = b.supply;
     assert.ok(before > 0 && before < 1);
-    s.state.regions[0].infra = 1;
+    s.state.regions[0].city += 2;
     s.tick(0.1);
     assert.ok(b.supply > before);
   });
@@ -281,7 +283,7 @@ describe('supply', () => {
 
 describe('economy', () => {
   it('earns from regions and traits, and pays upkeep', () => {
-    const map = makeMap([{ traits: ['city', 'industry'] }, { traits: ['oil'] }], chain(2), [{ id: 'A', capital: 0 }]);
+    const map = makeMap([{ traits: ['industry'] }, { traits: ['oil'] }], chain(2), [{ id: 'A', capital: 0 }]);
     const s = sim(map, ['A']);
     clearBlobs(s);
     const p = s.state.players[0];
@@ -308,7 +310,7 @@ describe('economy', () => {
   it('builds over time, and factories only where industry or a city is', () => {
     const s = duel();
     rich(s);
-    assert.match(s.build(0, 1, 'factory') ?? '', /can't build/);
+    assert.match(s.build(0, 1, 'factory') ?? '', /needs a city/);
     assert.equal(s.build(0, 1, 'fort'), null);
     run(s, 19);
     assert.equal(s.state.regions[1].fort, 0);
@@ -329,8 +331,8 @@ describe('economy', () => {
     const paid = [1, 2, 3].reduce((sum, l) => sum + buildCost('fort', l).cost.money, 0);
     assert.equal(money - p.resources.money, paid);
     assert.match(s.build(0, 1, 'fort') ?? '', /highest level/);
-    assert.equal(s.build(0, 1, 'infra'), null);
-    assert.match(s.build(0, 1, 'infra') ?? '', /queue is full/);
+    assert.equal(s.build(0, 1, 'market'), null);
+    assert.match(s.build(0, 1, 'road', 0) ?? '', /queue is full/);
     run(s, buildCost('fort', 1).seconds + 0.5);
     assert.equal(rs.fort, 1);
     assert.equal(rs.construction?.level, 2);
@@ -343,13 +345,13 @@ describe('economy', () => {
     const p = s.state.players[0];
     const rs = s.state.regions[1];
     s.build(0, 1, 'fort');
-    s.build(0, 1, 'infra');
+    s.build(0, 1, 'market');
     s.build(0, 1, 'fort');
     run(s, 5);
     const money = p.resources.money;
     assert.equal(s.unbuild(0, 1, 0), null);
     assert.equal(p.resources.money - money, buildCost('fort', 1).cost.money + buildCost('fort', 2).cost.money);
-    assert.equal(rs.construction?.kind, 'infra');
+    assert.equal(rs.construction?.kind, 'market');
     assert.equal(rs.construction?.progress, 0);
     assert.equal(rs.buildQueue.length, 0);
     assert.match(s.unbuild(0, 1, 1) ?? '', /nothing to cancel/);
@@ -360,7 +362,7 @@ describe('economy', () => {
     const s = duel();
     rich(s);
     s.build(0, 1, 'fort');
-    s.build(0, 1, 'infra');
+    s.build(0, 1, 'market');
     s.declareWar(1, 0);
     clearBlobs(s);
     place(s, 1, 'infantry', 1);
@@ -392,6 +394,137 @@ describe('economy', () => {
     run(s, 5);
     assert.ok(b.strength > 5);
     assert.ok(s.state.players[0].resources.manpower < mp + 5 * 0.3 * 2);
+  });
+});
+
+describe('development', () => {
+  /** A chain of `n` medium plains regions, all A's; the capital (region 0) is a city. */
+  function land(n: number, specs: Array<Parameters<typeof makeMap>[0][number]> = []) {
+    const map = makeMap(
+      Array.from({ length: n }, (_, i) => ({ country: 'A', ...specs[i] })),
+      chain(n),
+      [{ id: 'A', capital: 0 }],
+    );
+    const s = sim(map, ['A']);
+    clearBlobs(s);
+    for (let i = 0; i < n; i++) s.state.regions[i].owner = 0;
+    rich(s);
+    s.tick(0.1);
+    return s;
+  }
+  /** Runs until builds are done; land cut off meanwhile (and so lost) is given back. */
+  const finish = (s: ReturnType<typeof land>) => {
+    run(s, 200);
+    for (const rs of s.state.regions) rs.owner = 0;
+    s.tick(0.1);
+  };
+
+  it('slots come from region size, plus the city level', () => {
+    const s = land(3, [{}, { size: 'small' }, { size: 'large' }]);
+    assert.equal(s.build(0, 1, 'market'), null);
+    assert.match(s.build(0, 1, 'market') ?? '', /no free slot/);
+    for (let i = 0; i < 3; i++) assert.equal(s.build(0, 2, 'market'), null);
+    assert.match(s.build(0, 2, 'farm') ?? '', /no free slot/);
+    // Capital: medium (2) + city level 3, minus the barracks.
+    assert.equal(s.state.regions[0].city, START_CAPITAL_LEVEL);
+    assert.equal(s.slotsUsed(s.state.regions[0]), 1);
+  });
+
+  it('economic buildings only near your cities, and only on fitting land', () => {
+    const s = land(5, [{}, { terrain: 'hills' }, {}, {}, {}]);
+    assert.equal(s.build(0, 2, 'market'), null);
+    assert.match(s.build(0, 3, 'market') ?? '', /within 2 regions/);
+    assert.match(s.build(0, 1, 'farm') ?? '', /farmland or plains/);
+    assert.equal(s.build(0, 1, 'mine'), null);
+    assert.match(s.build(0, 2, 'well') ?? '', /oil field/);
+    assert.match(s.build(0, 2, 'barracks') ?? '', /needs a city/);
+  });
+
+  it('markets raise income', () => {
+    const s = land(2);
+    const before = s.state.players[0].income.money;
+    s.build(0, 1, 'market');
+    finish(s);
+    assert.equal(s.state.regions[1].econ.market, 1);
+    assert.ok(Math.abs(s.state.players[0].income.money - before - 0.4) < 1e-9);
+  });
+
+  it('expanding a city raises tax, slots, stack cap and supply reach; forts raise stack cap', () => {
+    const s = land(2);
+    const p = s.state.players[0];
+    const cap0 = s.stackCap(0);
+    const money0 = p.income.money;
+    assert.equal(s.build(0, 0, 'city'), null);
+    finish(s);
+    assert.equal(s.state.regions[0].city, START_CAPITAL_LEVEL + 1);
+    assert.equal(s.stackCap(0), cap0 + 1);
+    assert.ok(Math.abs(p.income.money - money0 - 0.6) < 1e-9);
+    assert.equal(supplyReach(s.state.regions[0].city), supplyReach(START_CAPITAL_LEVEL) + 1);
+    const cap1 = s.stackCap(1);
+    s.build(0, 1, 'fort');
+    s.build(0, 1, 'fort');
+    finish(s);
+    assert.equal(s.stackCap(1), cap1 + 2);
+  });
+
+  it('cities of countries nobody plays start small; capitals start at least at 3', () => {
+    const map = makeMap(
+      [{ country: 'A', city: 1 }, { country: 'A', city: 4 }, { country: 'C', city: 4 }],
+      chain(3),
+      [{ id: 'A', capital: 0 }],
+    );
+    const s = sim(map, ['A']);
+    assert.deepEqual(s.state.regions.map((r) => r.city), [START_CAPITAL_LEVEL, 4, 1]);
+  });
+
+  it('founds a city away from others, which becomes a supply hub', () => {
+    const s = land(14);
+    assert.match(s.build(0, 1, 'city') ?? '', /too close/);
+    // Region 6 is at the edge of the capital's reach; 7 and beyond are cut off.
+    assert.ok(s.state.regions[6].supplied);
+    assert.ok(!s.state.regions[7].supplied);
+    assert.equal(s.build(0, 6, 'city'), null);
+    finish(s);
+    assert.equal(s.state.regions[6].city, 1);
+    assert.ok(s.state.regions[10].supplied, 'a level-1 city reaches 4');
+    assert.ok(!s.state.regions[11].supplied);
+  });
+
+  it('roads speed up the crossing and carry supply further', () => {
+    const s = land(9);
+    const slow = s.travelSeconds('infantry', 0, 1, 2);
+    assert.ok(!s.state.regions[7].supplied);
+    for (let i = 0; i < 6; i++) assert.equal(s.build(0, i, 'road', i + 1), null);
+    assert.match(s.build(0, 1, 'road', 0) ?? '', /road already/);
+    finish(s);
+    assert.ok(Math.abs(s.travelSeconds('infantry', 0, 1, 2) - slow * 0.6) < 1e-9);
+    assert.ok(s.state.regions[7].supplied && s.state.regions[8].supplied, 'six road hops cost three');
+  });
+
+  it('demolishing frees the slot at once, with no refund', () => {
+    const s = land(2);
+    s.build(0, 1, 'market');
+    s.build(0, 1, 'market');
+    finish(s);
+    const money = s.state.players[0].resources.money;
+    assert.equal(s.demolish(0, 1, 'market'), null);
+    assert.equal(s.state.regions[1].econ.market, 1);
+    assert.ok(s.state.players[0].resources.money <= money);
+    assert.equal(s.build(0, 1, 'market'), null);
+    assert.match(s.demolish(0, 1, 'city') ?? '', /can't be demolished/);
+  });
+
+  it('captured land keeps its buildings', () => {
+    const s = duel();
+    rich(s);
+    s.build(0, 1, 'market');
+    run(s, 25);
+    s.declareWar(1, 0);
+    clearBlobs(s);
+    place(s, 1, 'infantry', 1);
+    run(s, 30);
+    assert.equal(s.state.regions[1].owner, 1);
+    assert.equal(s.state.regions[1].econ.market, 1);
   });
 });
 

@@ -708,40 +708,63 @@ button.primary:hover:not(:disabled) {
   padding: 0 4px;
 }
 
-/* Build bar: placement mode. */
+/* Build bar: placement mode. Sits between the unit panel (left) and the minimap (right). */
 .buildbar {
-  left: 50%;
+  left: 404px;
+  right: 264px;
   bottom: 10px;
-  transform: translateX(-50%);
+  margin: 0 auto;
+  width: fit-content;
+  max-width: calc(100% - 668px);
   padding: 0 0 6px;
 }
 
 .buildbar .classbar {
-  margin: 0 0 6px;
+  margin: 0 0 4px;
+}
+
+.buildbar .groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 0 8px;
+}
+
+.buildbar .gname {
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0 2px 1px;
 }
 
 .buildbar .slots {
   display: flex;
-  gap: 6px;
-  padding: 0 8px;
+  gap: 4px;
 }
 
 .buildbar .slot {
   display: grid;
   grid-template-columns: auto 1fr;
   grid-template-rows: auto auto;
-  column-gap: 8px;
+  column-gap: 5px;
   align-items: center;
   text-align: left;
-  padding: 4px 10px 4px 6px;
-  min-width: 150px;
-  font-size: 13px;
+  padding: 3px 6px 3px 4px;
+  width: 104px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
 }
 
 .buildbar .slot img {
   grid-row: span 2;
-  width: 26px;
+  width: 18px;
   image-rendering: pixelated;
+}
+
+.buildbar .slot .name {
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .buildbar .slot .name b {
@@ -754,10 +777,12 @@ button.primary:hover:not(:disabled) {
 }
 
 .buildbar .slot .price {
-  font-size: 11px;
+  font-size: 9px;
   color: var(--muted);
   text-transform: none;
   letter-spacing: 0;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .buildbar .slot:hover:not(:disabled) .price {
@@ -820,9 +845,12 @@ button.primary:hover:not(:disabled) {
   .buildbar {
     top: 10px;
     bottom: auto;
+    left: 10px;
+    right: 10px;
+    max-width: none;
   }
   .buildbar .slot {
-    min-width: 0;
+    width: auto;
   }
   .buildbar .slot .price {
     display: none;
