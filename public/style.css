@@ -1,20 +1,59 @@
+/* NATO ops, in pixels: dark grey, cyan lines, one pixel font, square everything. Panels and
+   buttons get pixel borders from box-shadows, which leaves the corners notched. */
+
+@font-face {
+  font-family: 'Pixelify Sans';
+  font-weight: 400;
+  font-display: block;
+  src: url(fonts/pixelify-sans-latin-400-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Pixelify Sans';
+  font-weight: 400;
+  font-display: block;
+  src: url(fonts/pixelify-sans-latin-ext-400-normal.woff2) format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Pixelify Sans';
+  font-weight: 700;
+  font-display: block;
+  src: url(fonts/pixelify-sans-latin-700-normal.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Pixelify Sans';
+  font-weight: 700;
+  font-display: block;
+  src: url(fonts/pixelify-sans-latin-ext-700-normal.woff2) format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 :root {
-  --bg: #0f1620;
-  --panel: rgba(16, 22, 32, 0.88);
-  --panel-solid: #161f2c;
-  --line: rgba(255, 255, 255, 0.12);
-  --text: #e8edf3;
-  --muted: #93a1b3;
-  --accent: #ffb347;
-  --accent-ink: #1b1204;
-  --good: #6fd08c;
-  --bad: #ff6b6b;
-  --radius: 10px;
+  --bg: #101418;
+  --panel: rgba(22, 28, 34, 0.94);
+  --panel-solid: #161c22;
+  --raised: #1d252d;
+  --line: #2c3a44;
+  --text: #e6edf2;
+  --muted: #8b9aa6;
+  --accent: #4fd1ff;
+  --accent-ink: #06141a;
+  --warn: #ffb347;
+  --bad: #ff5a5a;
+  --good: #7bd389;
+  --ink: #0b0f13;
   color-scheme: dark;
 }
 
 * {
   box-sizing: border-box;
+  border-radius: 0 !important;
 }
 
 html,
@@ -23,7 +62,14 @@ body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font: 16px/1.25 'Pixelify Sans', monospace;
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+  image-rendering: pixelated;
+}
+
+img {
+  image-rendering: pixelated;
 }
 
 .hidden {
@@ -35,96 +81,184 @@ body {
   inset: 0;
 }
 
+/* -- pixel borders ------------------------------------------------------------------------- */
+
+.px {
+  box-shadow:
+    0 -2px 0 0 var(--line),
+    0 2px 0 0 var(--line),
+    -2px 0 0 0 var(--line),
+    2px 0 0 0 var(--line),
+    0 0 0 2px var(--ink) inset;
+}
+
+/* -- menus --------------------------------------------------------------------------------- */
+
 #home,
 #lobby {
   display: grid;
   place-items: center;
   padding: 16px;
   overflow: auto;
-  background:
-    radial-gradient(ellipse at 30% 20%, rgba(255, 179, 71, 0.12), transparent 60%),
-    linear-gradient(160deg, #142235, #0b1119);
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(rgba(79, 209, 255, 0.07) 2px, transparent 2px),
+    linear-gradient(90deg, rgba(79, 209, 255, 0.07) 2px, transparent 2px);
+  background-size: 48px 48px;
 }
 
 .card {
   background: var(--panel-solid);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 24px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  padding: 0 0 20px;
+  box-shadow:
+    0 -2px 0 0 var(--line),
+    0 2px 0 0 var(--line),
+    -2px 0 0 0 var(--line),
+    2px 0 0 0 var(--line),
+    8px 8px 0 0 rgba(0, 0, 0, 0.45);
+}
+
+.card > :not(.classbar) {
+  margin-left: 20px;
+  margin-right: 20px;
+}
+
+/* The classification strip at the top of every card and panel. */
+.classbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  padding: 3px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 16px;
 }
 
 .home-card {
-  width: min(420px, 100%);
+  width: min(440px, 100%);
   display: grid;
   gap: 14px;
 }
 
 h1 {
   margin: 0;
-  font-size: 40px;
-  letter-spacing: 0.5px;
+  font-size: 48px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text);
+  text-shadow: 4px 4px 0 var(--ink);
+}
+
+h1 span {
+  color: var(--accent);
 }
 
 h2,
 h3 {
   margin: 0 0 8px;
+  font-weight: 700;
+  text-transform: uppercase;
 }
 
 h3 {
   font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
+  letter-spacing: 0.1em;
+  color: var(--accent);
   margin-top: 14px;
+}
+
+h3::before {
+  content: '// ';
+  color: var(--muted);
 }
 
 .tagline,
 .hint {
   color: var(--muted);
   margin: 0;
+  font-size: 14px;
 }
 
 label {
   display: grid;
   gap: 6px;
   color: var(--muted);
+  text-transform: uppercase;
+  font-size: 13px;
+  letter-spacing: 0.06em;
 }
 
 input,
 select,
 button {
   font: inherit;
+  font-size: 15px;
   color: var(--text);
-  background: #0f1621;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 9px 12px;
+  background: var(--ink);
+  border: 0;
+  padding: 8px 12px;
+  box-shadow:
+    0 -2px 0 0 var(--line),
+    0 2px 0 0 var(--line),
+    -2px 0 0 0 var(--line),
+    2px 0 0 0 var(--line);
+  margin: 2px;
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  box-shadow:
+    0 -2px 0 0 var(--accent),
+    0 2px 0 0 var(--accent),
+    -2px 0 0 0 var(--accent),
+    2px 0 0 0 var(--accent);
+}
+
+input::placeholder {
+  color: #4f5e69;
 }
 
 button {
   cursor: pointer;
-  background: #223047;
+  background: var(--raised);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 button:hover:not(:disabled) {
-  background: #2b3d5a;
+  background: var(--text);
+  color: var(--ink);
+}
+
+button:active:not(:disabled) {
+  transform: translate(2px, 2px);
 }
 
 button:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: default;
 }
 
 button.primary {
   background: var(--accent);
   color: var(--accent-ink);
-  border-color: transparent;
   font-weight: 700;
+  box-shadow:
+    0 -2px 0 0 var(--accent),
+    0 2px 0 0 var(--accent),
+    -2px 0 0 0 var(--accent),
+    2px 0 0 0 var(--accent),
+    4px 4px 0 2px var(--ink);
 }
 
 button.primary:hover:not(:disabled) {
-  background: #ffc46e;
+  background: #8fe2ff;
 }
 
 .row {
@@ -144,13 +278,12 @@ button.primary:hover:not(:disabled) {
 }
 
 .code {
-  font-family: ui-monospace, monospace;
   color: var(--accent);
-  letter-spacing: 0.12em;
+  letter-spacing: 0.15em;
 }
 
 .lobby-card {
-  width: min(880px, 100%);
+  width: min(900px, 100%);
 }
 
 .lobby-head {
@@ -184,31 +317,46 @@ button.primary:hover:not(:disabled) {
 .members li {
   display: flex;
   justify-content: space-between;
-  padding: 8px 10px;
-  background: #0f1621;
-  border-radius: 8px;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--ink);
+  border-left: 4px solid var(--accent);
 }
 
 .members .away {
   opacity: 0.5;
+  border-left-color: var(--muted);
 }
 
 .settings {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 8px 12px;
+  gap: 6px 12px;
   align-items: center;
+  font-size: 14px;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 
 .countries {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  gap: 6px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
 }
 
 .countries button {
   text-align: left;
-  padding: 8px 10px;
+  padding: 6px 10px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 8px;
+  align-items: center;
+}
+
+.countries button img {
+  grid-row: span 2;
+  width: 18px;
+  height: 20px;
 }
 
 .countries button.mine {
@@ -217,13 +365,14 @@ button.primary:hover:not(:disabled) {
 }
 
 .countries button.taken {
-  opacity: 0.5;
+  opacity: 0.45;
 }
 
 .countries small {
   display: block;
-  color: inherit;
+  font-size: 12px;
   opacity: 0.75;
+  text-transform: none;
 }
 
 /* -- game ---------------------------------------------------------------------------------- */
@@ -240,14 +389,24 @@ button.primary:hover:not(:disabled) {
   height: 100%;
   display: block;
   cursor: crosshair;
+  image-rendering: pixelated;
 }
 
 .hud {
   position: absolute;
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  backdrop-filter: blur(6px);
+  box-shadow:
+    0 -2px 0 0 var(--line),
+    0 2px 0 0 var(--line),
+    -2px 0 0 0 var(--line),
+    2px 0 0 0 var(--line);
+  font-size: 14px;
+}
+
+.hud .classbar {
+  margin: 0 0 6px;
+  font-size: 12px;
+  padding: 2px 8px;
 }
 
 .topbar {
@@ -255,37 +414,60 @@ button.primary:hover:not(:disabled) {
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  gap: 16px;
-  padding: 8px 14px;
+  gap: 18px;
+  padding: 6px 14px;
   align-items: center;
   white-space: nowrap;
   max-width: calc(100% - 20px);
   overflow-x: auto;
 }
 
+.res {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.res img {
+  width: 18px;
+  height: 18px;
+}
+
 .res b {
   font-variant-numeric: tabular-nums;
+  font-size: 16px;
 }
 
 .res small {
   color: var(--good);
-  margin-left: 3px;
+  font-size: 12px;
 }
 
 .res small.neg {
   color: var(--bad);
 }
 
+.clock {
+  color: var(--accent);
+}
+
 .broke {
   color: var(--bad);
   font-weight: 700;
+  animation: blink 0.8s steps(1) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.25;
+  }
 }
 
 .players {
   top: 10px;
   right: 10px;
-  padding: 8px 10px;
-  min-width: 190px;
+  padding: 0 0 6px;
+  min-width: 210px;
   max-height: 45vh;
   overflow: auto;
 }
@@ -294,7 +476,7 @@ button.primary:hover:not(:disabled) {
   display: flex;
   gap: 8px;
   align-items: center;
-  padding: 2px 0;
+  padding: 2px 10px;
 }
 
 .players .p.dead {
@@ -305,8 +487,13 @@ button.primary:hover:not(:disabled) {
 .swatch {
   width: 12px;
   height: 12px;
-  border-radius: 3px;
   flex: none;
+  box-shadow: 0 0 0 2px var(--ink);
+}
+
+.tag {
+  color: var(--warn);
+  font-size: 12px;
 }
 
 .players .num {
@@ -318,42 +505,53 @@ button.primary:hover:not(:disabled) {
 .panel {
   left: 10px;
   bottom: 10px;
-  width: min(360px, calc(100% - 20px));
-  max-height: 60vh;
+  width: min(380px, calc(100% - 20px));
+  max-height: 62vh;
   overflow: auto;
-  padding: 12px;
+  padding: 0 0 10px;
+}
+
+.panel > :not(.classbar) {
+  margin-left: 12px;
+  margin-right: 12px;
 }
 
 .panel h4 {
-  margin: 0 0 2px;
-  font-size: 16px;
+  margin: 4px 12px 0;
+  font-size: 20px;
+  text-transform: uppercase;
 }
 
 .panel .sub {
   color: var(--muted);
   margin-bottom: 8px;
+  text-transform: uppercase;
+  font-size: 12px;
 }
 
 .panel .grid2 {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 2px 10px;
+  gap: 1px 10px;
   margin-bottom: 8px;
 }
 
 .panel .grid2 span:nth-child(odd) {
   color: var(--muted);
+  text-transform: uppercase;
+  font-size: 12px;
+  align-self: center;
 }
 
 .panel .buttons {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin: 6px 0;
+  margin: 6px 12px;
 }
 
 .panel .buttons button {
-  padding: 6px 9px;
+  padding: 4px 8px;
   font-size: 13px;
 }
 
@@ -361,71 +559,90 @@ button.primary:hover:not(:disabled) {
   display: flex;
   gap: 8px;
   align-items: center;
-  padding: 4px 6px;
-  border-radius: 6px;
+  padding: 3px 6px;
   cursor: pointer;
+  font-size: 13px;
 }
 
 .unit:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(79, 209, 255, 0.08);
 }
 
 .unit.sel {
-  background: rgba(255, 179, 71, 0.18);
+  background: rgba(79, 209, 255, 0.18);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .unit .meta {
   color: var(--muted);
   font-size: 12px;
   margin-left: auto;
+  text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
 .bar {
-  height: 5px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
-  overflow: hidden;
+  display: flex;
+  gap: 2px;
+  height: 6px;
   margin: 3px 0 6px;
 }
 
 .bar i {
-  display: block;
-  height: 100%;
+  flex: 1;
+  background: var(--line);
+}
+
+.bar i.on {
   background: var(--accent);
 }
 
 .line {
-  border-top: 1px solid var(--line);
+  border-top: 2px dashed var(--line);
   margin-top: 8px;
-  padding-top: 8px;
+  padding-top: 6px;
+  text-transform: uppercase;
+  font-size: 13px;
+  color: var(--accent);
 }
 
 .feed {
   right: 10px;
   bottom: 10px;
-  width: min(300px, calc(100% - 20px));
-  padding: 8px 10px;
+  width: min(320px, calc(100% - 20px));
+  padding: 0 0 6px;
   font-size: 13px;
-  max-height: 30vh;
+  max-height: 32vh;
   overflow: hidden;
 }
 
-.feed div {
-  padding: 1px 0;
+.feed div:not(.classbar) {
+  padding: 1px 10px;
+}
+
+.feed time {
+  color: var(--accent);
+  margin-right: 6px;
 }
 
 .help {
   left: 10px;
   top: 10px;
-  padding: 6px 10px;
+  padding: 0 0 6px;
   font-size: 12px;
   color: var(--muted);
-  max-width: 340px;
+  max-width: 360px;
+}
+
+.help div:not(.classbar) {
+  padding: 0 10px;
 }
 
 .help b {
   color: var(--text);
+  font-weight: 400;
+  background: var(--ink);
+  padding: 0 4px;
 }
 
 @media (max-width: 900px) {
@@ -448,13 +665,14 @@ button.primary:hover:not(:disabled) {
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.45);
+  background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.55) 0 2px, rgba(0, 0, 0, 0.4) 2px 4px);
 }
 
 .overlay .card {
   text-align: center;
   display: grid;
   gap: 14px;
+  min-width: 320px;
 }
 
 .toast {
@@ -462,11 +680,24 @@ button.primary:hover:not(:disabled) {
   left: 50%;
   bottom: 70px;
   transform: translateX(-50%);
-  background: #3a1d22;
-  border: 1px solid #7a3340;
-  padding: 8px 14px;
-  border-radius: 8px;
+  background: #2a1214;
+  color: var(--text);
+  padding: 6px 14px;
   z-index: 10;
+  box-shadow:
+    0 -2px 0 0 var(--bad),
+    0 2px 0 0 var(--bad),
+    -2px 0 0 0 var(--bad),
+    2px 0 0 0 var(--bad);
+}
+
+.toast.info {
+  background: #0d2430;
+  box-shadow:
+    0 -2px 0 0 var(--accent),
+    0 2px 0 0 var(--accent),
+    -2px 0 0 0 var(--accent),
+    2px 0 0 0 var(--accent);
 }
 
 .offline {
@@ -475,7 +706,10 @@ button.primary:hover:not(:disabled) {
   left: 0;
   right: 0;
   text-align: center;
-  background: #7a3340;
-  padding: 4px;
+  background: var(--bad);
+  color: var(--ink);
+  padding: 3px;
   z-index: 10;
+  text-transform: uppercase;
+  animation: blink 0.8s steps(1) infinite;
 }

@@ -92,6 +92,11 @@ setInterval(() => game.tick(), TICK_MS);
   SRTM, GMTED2010 and ETOPO1 (public domain) and EU-DEM (produced using Copernicus data and
   information funded by the European Union).
 
+## Font
+
+[Pixelify Sans](https://github.com/eifetx/Pixelify-Sans) by the Pixelify Sans Project Authors,
+under the SIL Open Font License 1.1 (`public/fonts/OFL.txt`).
+
 ## Known limits / next steps
 
 - Balance is first-pass. Bot-only matches end in 17–40 minutes, but two evenly matched hard

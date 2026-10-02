@@ -17,11 +17,25 @@ let toastTimer = 0;
 export function toast(message: string, kind: 'error' | 'info' = 'error'): void {
   const t = $('#toast');
   t.textContent = message;
-  t.style.background = kind === 'info' ? '#1d3a2a' : '';
-  t.style.borderColor = kind === 'info' ? '#2f6b47' : '';
+  t.classList.toggle('info', kind === 'info');
   t.classList.remove('hidden');
   clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => t.classList.add('hidden'), 2600);
+}
+
+/** The cyan classification strip at the top of a panel. */
+export function classbar(left: string, right = ''): HTMLElement {
+  return el('div', { class: 'classbar' }, [el('span', {}, [left]), el('span', {}, [right])]);
+}
+
+/** A segmented progress bar (10 cells). */
+export function cellBar(v: number): HTMLElement {
+  const on = Math.round(Math.min(1, Math.max(0, v)) * 10);
+  return el(
+    'div',
+    { class: 'bar' },
+    Array.from({ length: 10 }, (_, i) => el('i', { class: i < on ? 'on' : '' })),
+  );
 }
 
 export function fmt(n: number): string {

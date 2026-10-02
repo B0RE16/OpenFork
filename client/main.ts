@@ -4,9 +4,13 @@ import type { LobbySettings, LobbyView, ServerMessage } from '../shared/protocol
 import { MAX_PLAYERS, MIN_PLAYERS } from '../shared/rules.ts';
 import { GameScreen } from './game-screen.ts';
 import { Net, savedName } from './net.ts';
+import { ICONS, spriteUrl } from './sprites.ts';
 import { $, el, toast } from './ui.ts';
 
 const net = new Net();
+// The map canvas uses the pixel font too; make sure it's loaded early.
+void document.fonts?.load('12px "Pixelify Sans"');
+void document.fonts?.load('700 12px "Pixelify Sans"');
 let me: { id: string; name: string } | null = null;
 let lobby: LobbyView | null = null;
 let game: GameScreen | null = null;
@@ -104,7 +108,7 @@ async function renderLobby(): Promise<void> {
   members.replaceChildren(
     ...lobby.members.map((m) =>
       el('li', { class: m.connected ? '' : 'away' }, [
-        el('span', {}, [`${m.name}${m.id === lobby?.host ? ' (host)' : ''}${m.id === me?.id ? ' — you' : ''}`]),
+        el('span', {}, [`${m.name}${m.id === lobby?.host ? ' [HOST]' : ''}${m.id === me?.id ? ' [YOU]' : ''}`]),
         el('span', { class: 'hint' }, [m.country ? countryName(m.country) : m.connected ? 'no pick' : 'away']),
       ]),
     ),
@@ -147,6 +151,7 @@ async function renderLobby(): Promise<void> {
     ]),
   );
 
+  const capitalIcon = spriteUrl(ICONS.capital, 2);
   const mine = lobby.members.find((m) => m.id === me?.id)?.country ?? null;
   const takenBy = new Map(lobby.members.filter((m) => m.country).map((m) => [m.country as string, m.name]));
   $('#countries').replaceChildren(
@@ -156,7 +161,11 @@ async function renderLobby(): Promise<void> {
       .map((c) => {
         const by = takenBy.get(c.id);
         const capital = map.regions[c.capital]?.name ?? '';
-        const b = el('button', { class: c.id === mine ? 'mine' : by ? 'taken' : '' }, [c.name, el('small', {}, [by && c.id !== mine ? by : capital])]);
+        const b = el('button', { class: c.id === mine ? 'mine' : by ? 'taken' : '' }, [
+          el('img', { src: capitalIcon, alt: '' }),
+          c.name,
+          el('small', {}, [by && c.id !== mine ? by : capital]),
+        ]);
         b.onclick = () => net.send({ t: 'lobby.pick', country: c.id === mine ? null : c.id });
         if (s.pick === 'random') (b as HTMLButtonElement).disabled = true;
         return b;

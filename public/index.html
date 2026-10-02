@@ -10,12 +10,13 @@
   <body>
     <main id="home" class="screen">
       <div class="card home-card">
-        <h1>OpenFork</h1>
-        <p class="tagline">Fight over Europe, province by province. Dig in, hold the line, take their capital.</p>
-        <label>Your name <input id="name" maxlength="24" autocomplete="nickname" /></label>
-        <button id="create" class="primary">Create a private lobby</button>
+        <div class="classbar"><span>Ops // Briefing</span><span>Unclassified</span></div>
+        <h1>Open<span>Fork</span></h1>
+        <p class="tagline">Theatre: Europe. Take the provinces, dig in, hold the line, seize their capital.</p>
+        <label>Callsign <input id="name" maxlength="24" autocomplete="nickname" /></label>
+        <button id="create" class="primary">Open a private lobby</button>
         <div class="row">
-          <input id="code" maxlength="8" placeholder="Lobby code" autocapitalize="characters" />
+          <input id="code" maxlength="8" placeholder="LOBBY CODE" autocapitalize="characters" />
           <button id="join">Join</button>
         </div>
       </div>
@@ -23,8 +24,9 @@
 
     <main id="lobby" class="screen hidden">
       <div class="card lobby-card">
+        <div class="classbar"><span>Ops // Lobby <span id="lobby-code" class="code"></span></span><span>Mission planning</span></div>
         <header class="lobby-head">
-          <h2>Lobby <span id="lobby-code" class="code"></span></h2>
+          <h2>Order of battle</h2>
           <div class="row">
             <button id="copy-link">Copy invite link</button>
             <button id="leave">Leave</button>
@@ -32,10 +34,10 @@
         </header>
         <div class="lobby-grid">
           <section>
-            <h3>Players</h3>
+            <h3>Commanders</h3>
             <ul id="members" class="members"></ul>
             <p class="hint">Empty seats are filled with bots when the game starts.</p>
-            <h3>Settings</h3>
+            <h3>Parameters</h3>
             <div id="settings" class="settings"></div>
           </section>
           <section>
@@ -57,11 +59,13 @@
       <div id="panel" class="hud panel hidden"></div>
       <div id="feed" class="hud feed"></div>
       <div id="help" class="hud help">
-        <b>Left click</b> select · <b>drag</b> box-select · <b>right click</b> send · <b>right drag</b> pan · <b>wheel</b> zoom<br />
-        <b>X</b> split · <b>G</b> merge · <b>H</b> halt · <b>Space</b> capital · <b>1-4</b> build · <b>Q/E</b> produce
+        <div class="classbar"><span>Controls</span></div>
+        <div><b>LMB</b> select · <b>drag</b> box · <b>RMB</b> send · <b>RMB drag</b> pan · <b>wheel</b> zoom</div>
+        <div><b>X</b> split · <b>G</b> merge · <b>H</b> halt · <b>Space</b> capital · <b>1-4</b> build · <b>Q</b>/<b>E</b> produce</div>
       </div>
       <div id="over" class="overlay hidden">
         <div class="card">
+          <div class="classbar"><span>Flash // End of operations</span></div>
           <h2 id="over-title"></h2>
           <button id="over-back" class="primary">Back to the lobby</button>
         </div>
@@ -69,7 +73,7 @@
     </main>
 
     <div id="toast" class="toast hidden"></div>
-    <div id="offline" class="offline hidden">Reconnecting…</div>
+    <div id="offline" class="offline hidden">Signal lost: reconnecting…</div>
     <script type="module" src="app.js"></script>
   </body>
 </html>

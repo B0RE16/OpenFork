@@ -209,7 +209,8 @@ export type BotDifficulty = 'easy' | 'normal' | 'hard';
 /** A human who drops is replaced by a bot after this many seconds (until they come back). */
 export const DISCONNECT_BOT_SECONDS = 10;
 
-export const PLAYER_COLORS = ['#e6194b', '#3cb44b', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45'];
+/** Muted military colours, one per country, picked to stay apart on the terrain. */
+export const PLAYER_COLORS = ['#c0504d', '#4f81bd', '#9bbb59', '#e0a33a', '#8064a2', '#4bacc6', '#d46f3b', '#2f6b5a'];
 
 // -- per-region numbers -----------------------------------------------------------------------
 

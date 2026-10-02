@@ -16,10 +16,11 @@ import {
 } from '../shared/rules.ts';
 import { colorOf, MapView } from './map-view.ts';
 import type { Net } from './net.ts';
-import { $, el, fmt, toast } from './ui.ts';
+import { hudIcon } from './sprites.ts';
+import { $, cellBar, classbar, el, fmt, toast } from './ui.ts';
 
 const BUILD_LABEL: Record<BuildingKind, string> = { barracks: 'Barracks', factory: 'Factory', fort: 'Fort', infra: 'Infrastructure' };
-const RES_ICON: Record<keyof Resources, string> = { money: '$', manpower: '👥', steel: '⚙', oil: '🛢' };
+const RES_SHORT: Record<keyof Resources, string> = { money: '$', manpower: 'MP ', steel: 'ST ', oil: 'OIL ' };
 
 export class GameScreen {
   private readonly net: Net;
@@ -32,7 +33,7 @@ export class GameScreen {
   private selected = new Set<number>();
   private region = -1;
   private box: [number, number, number, number] | null = null;
-  private feed: string[] = [];
+  private feed: Array<[string, string]> = [];
   private raf = 0;
   private keys = new Set<string>();
   private readonly cleanup: Array<() => void> = [];
@@ -328,9 +329,9 @@ export class GameScreen {
   private renderTopbar(): void {
     const snap = this.snap;
     if (!snap) return;
-    const t = `${Math.floor(snap.time / 60)}:${String(Math.floor(snap.time % 60)).padStart(2, '0')}`;
+    const t = `T+${clock(snap.time)}`;
     if (this.you === null) {
-      $('#topbar').replaceChildren(el('span', {}, ['👁 Watching']), el('span', {}, [t]));
+      $('#topbar').replaceChildren(el('span', { class: 'tag' }, ['[OBSERVER]']), el('span', { class: 'clock' }, [t]));
       return;
     }
     const p = snap.players[this.you];
@@ -338,14 +339,14 @@ export class GameScreen {
       let rate = p.income[i];
       if (k === 'money') rate -= p.upkeep;
       return el('span', { class: 'res', title: k }, [
-        `${RES_ICON[k]} `,
+        el('img', { src: hudIcon(k), alt: k }),
         el('b', {}, [fmt(p.res[i])]),
         el('small', { class: rate < 0 ? 'neg' : '' }, [`${rate >= 0 ? '+' : ''}${rate.toFixed(1)}/s`]),
       ]);
     });
-    if (p.broke) parts.push(el('span', { class: 'broke' }, ['BROKE: units are withering']));
-    if (!p.alive) parts.push(el('span', { class: 'broke' }, ['Eliminated — watching']));
-    parts.push(el('span', {}, [t]));
+    if (p.broke) parts.push(el('span', { class: 'broke' }, ['BROKE: UNITS WITHERING']));
+    if (!p.alive) parts.push(el('span', { class: 'broke' }, ['ELIMINATED // OBSERVING']));
+    parts.push(el('span', { class: 'clock' }, [t]));
     $('#topbar').replaceChildren(...parts);
   }
 
@@ -357,12 +358,14 @@ export class GameScreen {
     const strength = new Map<number, number>();
     for (const b of snap.blobs) strength.set(b[1], (strength.get(b[1]) ?? 0) + b[3]);
     $('#players').replaceChildren(
+      classbar('ORBAT', 'Regions'),
       ...this.players.map((p) => {
         const row = snap.players[p.id];
-        const tag = p.human ? (row.bot ? ' (away)' : '') : '';
+        const tag = !row.alive ? '[KIA]' : p.id === this.you ? '[YOU]' : !p.human ? '[BOT]' : row.bot ? '[AWAY]' : '';
         return el('div', { class: `p${row.alive ? '' : ' dead'}`, title: `${regions.get(p.id) ?? 0} regions, ${Math.round(strength.get(p.id) ?? 0)} strength` }, [
           el('span', { class: 'swatch', style: `background:${p.color}` }),
-          el('span', {}, [`${p.name}${p.id === this.you ? ' (you)' : ''}${tag}`]),
+          el('span', {}, [p.name.replace(/ \(bot\)$/, '')]),
+          el('span', { class: 'tag' }, [tag]),
           el('span', { class: 'num' }, [`${regions.get(p.id) ?? 0}`]),
         ]);
       }),
@@ -370,12 +373,12 @@ export class GameScreen {
   }
 
   private addEvent(e: GameEvent): void {
-    const name = (id: number) => this.players[id]?.name ?? 'Neutral';
+    const name = (id: number) => (this.players[id]?.name ?? 'Neutral').replace(/ \(bot\)$/, '');
     const region = (id: number) => this.map.regions[id]?.name ?? '?';
     let text: string | null = null;
     switch (e.kind) {
       case 'battle':
-        if (this.you !== null && e.sides.includes(this.you)) text = `⚔ Battle at ${region(e.region)}`;
+        if (this.you !== null && e.sides.includes(this.you)) text = `CONTACT at ${region(e.region)}`;
         break;
       case 'captured':
         if (e.by === this.you || e.from === this.you || e.from >= 0) {
@@ -386,16 +389,16 @@ export class GameScreen {
         if (e.owner === this.you) text = `${BUILD_LABEL[e.building]}${e.level > 1 ? ` ${e.level}` : ''} finished at ${region(e.region)}`;
         break;
       case 'eliminated':
-        text = `☠ ${name(e.player)} was knocked out by ${name(e.by)}`;
+        text = `${name(e.player)} knocked out by ${name(e.by)}`;
         break;
       case 'won':
-        text = `🏆 ${name(e.player)} wins`;
+        text = `${name(e.player)} wins`;
         break;
     }
     if (!text) return;
-    this.feed.unshift(text);
+    this.feed.unshift([clock(this.snap?.time ?? 0), text]);
     this.feed.length = Math.min(this.feed.length, 8);
-    $('#feed').replaceChildren(...this.feed.map((t) => el('div', {}, [t])));
+    $('#feed').replaceChildren(classbar('SITREP'), ...this.feed.map(([t, m]) => el('div', {}, [el('time', {}, [t]), m])));
     $('#feed').classList.toggle('hidden', this.feed.length === 0);
   }
 
@@ -420,8 +423,8 @@ export class GameScreen {
     const where = b[8] > 0 ? `→ ${this.map.regions[b[7]].name}` : this.map.regions[b[6]].name;
     const row = el('div', { class: `unit${this.selected.has(b[0]) ? ' sel' : ''}` }, [
       el('span', { class: 'swatch', style: `background:${colorOf(this.players, b[1])}` }),
-      el('span', {}, [`${type === 'tank' ? 'Tanks' : 'Infantry'} ${Math.ceil(b[3])}/${b[4]}`]),
-      el('span', { class: 'meta' }, [`trn ${b[5]} · sup ${Math.round(b[10] * 100)}% · dig ${Math.round(b[9] * 100)}% · ${where}`]),
+      el('span', {}, [`${type === 'tank' ? 'ARM' : 'INF'} ${Math.ceil(b[3])}/${b[4]}`]),
+      el('span', { class: 'meta' }, [`TRN ${b[5]} · SUP ${Math.round(b[10] * 100)}% · DUG ${Math.round(b[9] * 100)}%`, el('br'), where.toUpperCase()]),
     ]);
     if (selectable) {
       row.onclick = (e) => {
@@ -444,8 +447,8 @@ export class GameScreen {
       return b;
     };
     return [
-      el('h4', {}, [`${sel.length} unit${sel.length > 1 ? 's' : ''} selected`]),
-      el('div', { class: 'sub' }, [`Strength ${Math.round(strength)} · right-click a region to send them`]),
+      classbar('Units selected', `${sel.length}`),
+      el('div', { class: 'sub' }, [`Strength ${Math.round(strength)} · right-click a region to send`]),
       el('div', { class: 'buttons' }, [
         btn('Split (X)', () => sel.forEach((b) => this.send({ o: 'split', blob: b[0] })), 'Halve each unit; both halves keep their training'),
         btn('Merge (G)', () => this.mergeSelected(), 'Same type, same region; costs some training'),
@@ -461,6 +464,7 @@ export class GameScreen {
     const owner = rr[0];
     const country = this.map.countries.find((c) => c.id === region.country)?.name ?? region.country;
     const out: HTMLElement[] = [
+      classbar('Intel // Region', owner === this.you && this.you !== null ? 'Friendly' : owner >= 0 ? 'Hostile' : 'Neutral'),
       el('h4', {}, [region.name]),
       el('div', { class: 'sub' }, [`${country} · ${region.terrain} · ${region.size}${region.traits.length ? ` · ${region.traits.join(', ')}` : ''}`]),
     ];
@@ -470,13 +474,13 @@ export class GameScreen {
       ['Owner', owner >= 0 ? (this.players[owner]?.name ?? '?') : 'Neutral'],
       ['Fort', `${rr[1]} / ${MAX_LEVEL.fort}`],
       ['Infrastructure', `${rr[2]} / ${MAX_LEVEL.infra}`],
-      ['Supply', owner >= 0 ? `${rr[3] & 4 ? 'in supply' : 'CUT OFF'} · capacity ${Math.round(supplyCapacity(region, rr[2]))}` : '—'],
+      ['Supply', owner >= 0 ? `${rr[3] & 4 ? 'in supply' : 'CUT OFF'} · cap ${Math.round(supplyCapacity(region, rr[2]))}` : '—'],
       ['Stack', `${myCount} / ${stackCap(region, rr[2])} of yours`],
       ['Capture', `~${Math.round(captureSeconds(region, rr[1], 0))} s untrained`],
     ];
     out.push(el('div', { class: 'grid2' }, info.flatMap(([k, v]) => [el('span', {}, [k]), el('span', {}, [v])])));
     if (rr[4] >= 0) {
-      out.push(el('div', {}, [`Being captured by ${this.players[rr[4]]?.name ?? '?'}`]), bar(rr[5]));
+      out.push(el('div', {}, [`Being captured by ${this.players[rr[4]]?.name ?? '?'}`]), cellBar(rr[5]));
     }
 
     if (owner === this.you && this.you !== null) {
@@ -484,7 +488,7 @@ export class GameScreen {
       const res: Resources = { money: me.res[0], manpower: me.res[1], steel: me.res[2], oil: me.res[3] };
       const building = rr[6] >= 0 ? BUILDING_INDEX[rr[6]] : null;
       out.push(el('div', { class: 'line' }, [building ? `Building: ${BUILD_LABEL[building]}` : 'Build']));
-      if (building) out.push(bar(rr[7]));
+      if (building) out.push(cellBar(rr[7]));
       const levels: Record<BuildingKind, number> = { barracks: rr[3] & 1 ? 1 : 0, factory: rr[3] & 2 ? 1 : 0, fort: rr[1], infra: rr[2] };
       out.push(
         el(
@@ -522,17 +526,17 @@ export class GameScreen {
     add.disabled = line.queue.length >= 5;
     if (!afford(res, stats.cost) && line.queue.length === 0) add.title += ' (not enough resources yet)';
     add.onclick = () => this.send({ o: 'produce', region: line.region, building: line.building });
-    const repeat = el('button', { title: 'Keep producing' }, [line.repeat ? '⟳ Repeat on' : '⟳ Repeat off']);
+    const repeat = el('button', { title: 'Keep producing' }, [line.repeat ? 'Repeat: on' : 'Repeat: off']);
     repeat.onclick = () => this.send({ o: 'repeat', region: line.region, building: line.building, on: !line.repeat });
-    const cancel = el('button', {}, ['✕']) as HTMLButtonElement;
+    const cancel = el('button', { title: 'Cancel the last order' }, ['X']) as HTMLButtonElement;
     cancel.disabled = line.queue.length === 0;
     cancel.onclick = () => this.send({ o: 'cancel', region: line.region, building: line.building });
     const status = line.queue.length
-      ? `${line.queue.length} queued${line.progress < 0 ? ' — waiting for resources' : ''}`
+      ? `${line.queue.length} queued${line.progress < 0 ? ' // awaiting resources' : ''}`
       : 'idle';
     return [
       el('div', { class: 'line' }, [`${line.building === 'barracks' ? 'Barracks' : 'Factory'}: ${status}`]),
-      bar(Math.max(0, line.progress)),
+      cellBar(Math.max(0, line.progress)),
       el('div', { class: 'buttons' }, [add, repeat, cancel]),
     ];
   }
@@ -540,8 +544,8 @@ export class GameScreen {
 
 const BUILD_LABEL_KEYS: BuildingKind[] = ['barracks', 'factory', 'fort', 'infra'];
 
-function bar(v: number): HTMLElement {
-  return el('div', { class: 'bar' }, [el('i', { style: `width:${Math.round(Math.min(1, Math.max(0, v)) * 100)}%` })]);
+function clock(t: number): string {
+  return `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 }
 
 function afford(res: Resources, cost: Resources): boolean {
@@ -550,6 +554,6 @@ function afford(res: Resources, cost: Resources): boolean {
 
 function costText(cost: Resources): string {
   return RESOURCES.filter((k) => cost[k] > 0)
-    .map((k) => `${RES_ICON[k]}${cost[k]}`)
+    .map((k) => `${RES_SHORT[k]}${cost[k]}`)
     .join(' ');
 }
