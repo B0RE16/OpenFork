@@ -102,7 +102,6 @@ export class GameScreen {
 
   onSnapshot(snap: Snapshot): void {
     this.snap = snap;
-    this.view.takeSnapshot(snap);
     const alive = new Set(snap.blobs.map((b) => b[0]));
     for (const id of this.selected) if (!alive.has(id)) this.selected.delete(id);
     if (!this.centred && this.you !== null) {
