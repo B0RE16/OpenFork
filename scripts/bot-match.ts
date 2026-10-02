@@ -27,6 +27,9 @@ while (sim.state.winner === null && sim.state.time < 3600) {
   for (const e of sim.drainEvents()) {
     if (e.kind === 'eliminated') console.log(`${fmt(sim.state.time)} ${sim.state.players[e.player].name} eliminated by ${sim.state.players[e.by]?.name ?? '?'}`);
     if (e.kind === 'won') console.log(`${fmt(sim.state.time)} ${sim.state.players[e.player].name} wins`);
+    const name = (id: number) => sim.state.players[id].country;
+    if (e.kind === 'war') console.log(`${fmt(sim.state.time)} war: ${name(e.by)} attacks ${name(e.by === e.a ? e.b : e.a)}`);
+    if (e.kind === 'peace') console.log(`${fmt(sim.state.time)} peace: ${name(e.a)} + ${name(e.b)}`);
   }
   if (sim.state.time - lastReport >= 300) {
     lastReport = sim.state.time;

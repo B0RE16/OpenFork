@@ -60,12 +60,18 @@ describe('movement', () => {
   });
 
   it('is slower into forest, and into enemy land with forts', () => {
-    const map = makeMap([{}, { terrain: 'forest' }, {}], chain(3), [{ id: 'A', capital: 0 }]);
-    const s = sim(map, ['A']);
+    const map = makeMap([{}, { terrain: 'forest' }, {}, {}], chain(4), [
+      { id: 'A', capital: 0 },
+      { id: 'B', capital: 3 },
+    ]);
+    const s = sim(map, ['A', 'B']);
     const plains = s.travelSeconds('infantry', 0, 0, 1);
     assert.ok(plains > CROSS_SECONDS, 'forest is slower than plains');
+    s.state.regions[2].owner = NEUTRAL;
     const t0 = s.travelSeconds('infantry', 0, 1, 2);
-    s.state.regions[2].owner = 5; // somebody else's
+    s.state.regions[2].owner = 1; // B's
+    assert.equal(s.travelSeconds('infantry', 0, 1, 2), t0, 'zones of control only at war');
+    s.declareWar(0, 1);
     const enemy = s.travelSeconds('infantry', 0, 1, 2);
     s.state.regions[2].fort = 2;
     const forted = s.travelSeconds('infantry', 0, 1, 2);
@@ -153,11 +159,15 @@ describe('battles', () => {
     // Owners 0, 1, 2 (only 0 is a set-up player; the rules don't care for damage).
     s.state.players.push({ ...s.state.players[0], id: 1 }, { ...s.state.players[0], id: 2 });
     s.state.regions[0].owner = NEUTRAL;
+    s.declareWar(0, 1);
+    s.declareWar(0, 2);
+    s.declareWar(1, 2);
     const a = place(s, 0, 'infantry', 0, 10);
     const b = place(s, 1, 'infantry', 0, 20);
     const c = place(s, 2, 'infantry', 0, 10);
     for (const x of [a, b, c]) x.supply = 1;
-    s.tick(0.1);
+    // Damage only (no supply effects): run the battle step directly.
+    (s as unknown as { battles(dt: number): void }).battles(0.1);
     const lossA = 10 - a.strength;
     const lossB = 20 - b.strength;
     const lossC = 10 - c.strength;
@@ -170,6 +180,7 @@ describe('battles', () => {
     const s = duel();
     clearBlobs(s);
     s.state.regions[3].owner = 1;
+    s.declareWar(0, 1);
     place(s, 1, 'infantry', 3);
     const att = place(s, 0, 'infantry', 3);
     s.tick(0.1);

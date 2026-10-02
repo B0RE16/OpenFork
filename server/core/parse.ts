@@ -36,6 +36,10 @@ function order(v: unknown): Order | null {
       return isInt(v.region) && isProd(v.building) && typeof v.on === 'boolean'
         ? { o: 'repeat', region: v.region, building: v.building, on: v.on }
         : null;
+    case 'war':
+    case 'peace':
+    case 'refuse':
+      return isInt(v.player) ? { o: v.o, player: v.player } : null;
     case 'cancel':
       return isInt(v.region) && isProd(v.building) ? { o: 'cancel', region: v.region, building: v.building } : null;
     default:

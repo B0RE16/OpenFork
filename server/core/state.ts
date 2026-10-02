@@ -82,6 +82,10 @@ export interface Player {
 }
 
 export type SimEvent =
+  | { kind: 'war'; a: number; b: number; by: number }
+  | { kind: 'peace'; a: number; b: number }
+  | { kind: 'peaceOffer'; from: number; to: number }
+  | { kind: 'peaceRefused'; from: number; to: number }
   | { kind: 'battle'; region: number; sides: number[] }
   | { kind: 'captured'; region: number; by: number; from: number }
   | { kind: 'built'; region: number; owner: number; building: BuildingKind; level: number }
@@ -97,6 +101,19 @@ export interface SimState {
   blobs: Map<number, Blob>;
   nextBlobId: number;
   winner: number | null;
+  /** Diplomacy between players (keys from pairKey). Everyone starts at peace. */
+  wars: Set<string>;
+  /** Pair → sim time a war began, or the last capture between them. */
+  warActivity: Map<string, number>;
+  /** Pair → sim time until which neither may declare war (after making peace). */
+  truces: Map<string, number>;
+  /** "from>to" → sim time the offer of peace expires. */
+  peaceOffers: Map<string, number>;
+}
+
+/** Key for an unordered pair of players. */
+export function pairKey(a: number, b: number): string {
+  return a < b ? `${a}:${b}` : `${b}:${a}`;
 }
 
 export function emptyLine(): ProductionLine {

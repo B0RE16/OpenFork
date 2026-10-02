@@ -27,6 +27,7 @@ import {
   MIN_STRENGTH,
   OUT_OF_SUPPLY_LOSS,
   OUT_OF_SUPPLY_TRAINING,
+  PEACE_OFFER_SECONDS,
   type ProductionBuilding,
   REFILL_RATE,
   RESOURCES,
@@ -44,6 +45,7 @@ import {
   TICK_MS,
   TRAINING_DAMAGE,
   TRAINING_PROTECTION,
+  TRUCE_SECONDS,
   TRAIT_YIELD,
   type UnitType,
   UNITS,
@@ -52,6 +54,7 @@ import {
 import {
   type Blob,
   emptyLine,
+  pairKey,
   emptyRegion,
   NEUTRAL,
   type Player,
@@ -91,6 +94,10 @@ export class Sim {
       blobs: new Map(),
       nextBlobId: 1,
       winner: null,
+      wars: new Set(),
+      warActivity: new Map(),
+      truces: new Map(),
+      peaceOffers: new Map(),
     };
     const taken = new Set<number>();
     players.forEach((p, id) => {
@@ -201,13 +208,117 @@ export class Sim {
     return s;
   }
 
+  /** Two sides at war stand in this region. */
   contested(region: number): boolean {
-    return this.ownersIn(region).size > 1;
+    const owners = [...this.ownersIn(region)];
+    for (let i = 0; i < owners.length; i++) {
+      for (let j = i + 1; j < owners.length; j++) if (this.atWar(owners[i], owners[j])) return true;
+    }
+    return false;
   }
 
+  /** Units of someone at war with `owner` stand in this region. */
   hostileIn(region: number, owner: number): boolean {
-    for (const b of this.standing().get(region) ?? []) if (b.owner !== owner) return true;
+    for (const b of this.standing().get(region) ?? []) if (this.atWar(b.owner, owner)) return true;
     return false;
+  }
+
+  // -- diplomacy --------------------------------------------------------------------------
+
+  atWar(a: number, b: number): boolean {
+    return a !== b && a >= 0 && b >= 0 && this.state.wars.has(pairKey(a, b));
+  }
+
+  /** Another player's land is closed to `owner` while they're at peace. */
+  private closedTo(owner: number, region: number): boolean {
+    const o = this.state.regions[region].owner;
+    return o !== NEUTRAL && o !== owner && !this.atWar(o, owner);
+  }
+
+  inTruce(a: number, b: number): boolean {
+    return (this.state.truces.get(pairKey(a, b)) ?? -1) > this.state.time;
+  }
+
+  /** `by` goes to war with `target` (attacking someone does this too). */
+  declareWar(by: number, target: number): string | null {
+    const a = this.player(by);
+    const b = this.player(target);
+    if (!a?.alive || !b?.alive || by === target) return 'no such country';
+    if (this.atWar(by, target)) return null;
+    if (this.inTruce(by, target)) return `truce with ${b.name} for ${Math.ceil((this.state.truces.get(pairKey(by, target)) ?? 0) - this.state.time)} s`;
+    const key = pairKey(by, target);
+    this.state.wars.add(key);
+    this.state.warActivity.set(key, this.state.time);
+    this.state.peaceOffers.delete(`${by}>${target}`);
+    this.state.peaceOffers.delete(`${target}>${by}`);
+    this.events.push({ kind: 'war', a: by, b: target, by });
+    return null;
+  }
+
+  /** Offers peace, or accepts it if the other side already offered. */
+  offerPeace(from: number, to: number): string | null {
+    if (!this.player(from)?.alive || !this.player(to)?.alive) return 'no such country';
+    if (!this.atWar(from, to)) return 'not at war';
+    if (this.state.peaceOffers.has(`${to}>${from}`)) {
+      this.makePeace(from, to);
+      return null;
+    }
+    this.state.peaceOffers.set(`${from}>${to}`, this.state.time + PEACE_OFFER_SECONDS);
+    this.events.push({ kind: 'peaceOffer', from, to });
+    return null;
+  }
+
+  /** Turns down an offer of peace. */
+  refusePeace(by: number, from: number): string | null {
+    if (!this.state.peaceOffers.delete(`${from}>${by}`)) return 'no offer to refuse';
+    this.events.push({ kind: 'peaceRefused', from, to: by });
+    return null;
+  }
+
+  /** Ends a war: a truce starts, and each side's units in the other's land go home. */
+  private makePeace(a: number, b: number): void {
+    const key = pairKey(a, b);
+    this.state.wars.delete(key);
+    this.state.peaceOffers.delete(`${a}>${b}`);
+    this.state.peaceOffers.delete(`${b}>${a}`);
+    this.state.truces.set(key, this.state.time + TRUCE_SECONDS);
+    this.state.regions.forEach((rs) => {
+      if (rs.capture && ((rs.capture.by === a && rs.owner === b) || (rs.capture.by === b && rs.owner === a))) rs.capture = null;
+    });
+    for (const blob of this.state.blobs.values()) {
+      const other = blob.owner === a ? b : blob.owner === b ? a : -1;
+      if (other < 0) continue;
+      const here = blob.progress > 0 ? blob.path[0] : blob.region;
+      const inTheirs = this.state.regions[here].owner === other || blob.path.some((r) => this.state.regions[r].owner === other);
+      if (!inTheirs) continue;
+      if (blob.progress > 0) {
+        // Turn back to where it came from.
+        blob.path = [];
+        blob.progress = 0;
+        this.touch();
+      }
+      const home = this.nearestOwn(blob);
+      blob.path = home === null ? [] : (this.route(blob.type, blob.owner, blob.training, blob.region, home, other) ?? []);
+      blob.hold = false;
+    }
+    this.events.push({ kind: 'peace', a, b });
+  }
+
+  /** The nearest region its owner holds (by hops), for sending units home. */
+  private nearestOwn(b: Blob): number | null {
+    const seen = new Set([b.region]);
+    const queue = [b.region];
+    for (let q = 0; q < queue.length; q++) {
+      const u = queue[q];
+      if (this.state.regions[u].owner === b.owner) return u;
+      for (const e of this.world.neighbors(u)) {
+        if (!seen.has(e.id)) {
+          seen.add(e.id);
+          queue.push(e.id);
+        }
+      }
+    }
+    return null;
   }
 
   /** Seconds for a blob of `type` owned by `owner` to go from one region to its neighbour. */
@@ -217,12 +328,15 @@ export class Sim {
     const dest = this.state.regions[to];
     let speed = UNITS[type].speed * TERRAIN_MOVE[this.world.regions[to].terrain];
     if (dest.owner === owner) speed *= 1 + INFRA_MOVE_BONUS * dest.infra;
-    else if (dest.owner !== NEUTRAL) speed *= Math.max(0.3, ENEMY_LAND_MOVE - FORT_MOVE_PENALTY * dest.fort);
+    else if (this.atWar(dest.owner, owner)) speed *= Math.max(0.3, ENEMY_LAND_MOVE - FORT_MOVE_PENALTY * dest.fort);
     return (CROSS_SECONDS * (edge.dist / this.world.hop)) / speed;
   }
 
-  /** Cheapest route (excluding `from`), counting travel, captures and fights on the way. */
-  route(type: UnitType, owner: number, training: number, from: number, to: number): number[] | null {
+  /**
+   * Cheapest route (excluding `from`), counting travel, captures and fights on the way.
+   * Land of countries at peace with `owner` is closed, except `through`'s (going home).
+   */
+  route(type: UnitType, owner: number, training: number, from: number, to: number, through = -1): number[] | null {
     if (from === to) return [];
     const n = this.world.regions.length;
     const cost = new Array<number>(n).fill(Infinity);
@@ -238,6 +352,7 @@ export class Sim {
         const v = e.id;
         if (done[v]) continue;
         const rs = this.state.regions[v];
+        if (this.closedTo(owner, v) && rs.owner !== through) continue;
         let c = this.travelSeconds(type, owner, u, v);
         if (rs.owner !== owner) c += this.world.captureSeconds(v, rs.fort, training);
         if (this.hostileIn(v, owner)) c += FIGHT_PATH_PENALTY;
@@ -271,6 +386,12 @@ export class Sim {
     const blobs = this.own(playerId, blobIds);
     if (typeof blobs === 'string') return blobs;
     if (!this.world.regions[target]) return 'no such region';
+    // Sending units into a country you're at peace with is an attack: war.
+    const victim = this.state.regions[target].owner;
+    if (this.closedTo(playerId, target)) {
+      const err = this.declareWar(playerId, victim);
+      if (err) return err;
+    }
     for (const b of blobs) {
       // Waiting at the edge of a full region: turn back and go from where it came.
       if (b.progress >= 1) {
@@ -415,6 +536,7 @@ export class Sim {
   tick(dt = TICK_MS / 1000): void {
     if (this.state.winner !== null) return;
     this.state.time += dt;
+    for (const [key, until] of this.state.peaceOffers) if (until <= this.state.time) this.state.peaceOffers.delete(key);
     this.updateSupply();
     this.moveBlobs(dt);
     const fighting = this.battles(dt);
@@ -514,6 +636,13 @@ export class Sim {
     const to = b.path[0];
     const edge = this.world.edge(b.region, to);
     const rs = this.state.regions[to];
+    if (this.closedTo(b.owner, to)) {
+      // Peace was made on the way: stay out of their land.
+      b.path = [];
+      b.progress = 0;
+      this.touch();
+      return;
+    }
     const hostile = this.hostileIn(to, b.owner);
     // A full region: wait at its edge until there's room, unless just passing through own land.
     const passing = b.path.length > 1 && rs.owner === b.owner && !hostile;
@@ -547,6 +676,8 @@ export class Sim {
       const sides = new Map<number, Blob[]>();
       for (const b of blobs) sides.set(b.owner, [...(sides.get(b.owner) ?? []), b]);
       if (sides.size < 2) continue;
+      const foes = (s: number) => [...sides.keys()].filter((t) => this.atWar(s, t));
+      if (![...sides.keys()].some((s) => foes(s).length)) continue;
       const rs = this.state.regions[region];
       const terrain = this.world.regions[region].terrain;
       const strengthOf = (list: Blob[]) => list.reduce((s, b) => s + b.strength, 0);
@@ -565,10 +696,12 @@ export class Sim {
           );
         const total = attackers.reduce((sum, b) => sum + b.strength, 0);
         const riverShare = total > 0 ? attackers.filter((b) => b.crossedRiver).reduce((x, b) => x + b.strength, 0) / total : 0;
+        const mine = foes(s);
         let enemies = 0;
-        for (const [t, list] of sides) if (t !== s) enemies += strengthOf(list);
-        for (const [t, defenders] of sides) {
-          if (t === s || enemies <= 0) continue;
+        for (const t of mine) enemies += strengthOf(sides.get(t) as Blob[]);
+        for (const t of mine) {
+          const defenders = sides.get(t) as Blob[];
+          if (enemies <= 0) continue;
           const st = strengthOf(defenders);
           const share = (power * dt * st) / enemies;
           for (const d of defenders) {
@@ -579,7 +712,7 @@ export class Sim {
           }
         }
       }
-      for (const b of blobs) fighting.add(b.id);
+      for (const [s, list] of sides) if (foes(s).length) for (const b of list) fighting.add(b.id);
     }
     for (const [b, d] of damage) b.strength -= d;
     for (const id of fighting) {
@@ -593,10 +726,12 @@ export class Sim {
 
   private captures(dt: number): void {
     this.state.regions.forEach((rs, i) => {
-      const owners = this.ownersIn(i);
-      if (owners.size > 1) return; // fighting: capture waits
-      const [by] = owners;
-      if (by === undefined || by === rs.owner) {
+      if (this.contested(i)) return; // fighting: capture waits
+      // Who could take it: anyone there who isn't the owner (peaceful neighbours share
+      // neutral land; whoever started capturing first keeps going).
+      const takers = [...this.ownersIn(i)].filter((o) => o !== rs.owner && (rs.owner === NEUTRAL || this.atWar(o, rs.owner)));
+      const by = rs.capture && takers.includes(rs.capture.by) ? rs.capture.by : takers.sort((a, b) => a - b)[0];
+      if (by === undefined) {
         if (rs.capture) {
           rs.capture.progress -= CAPTURE_DECAY * dt;
           if (rs.capture.progress <= 0) rs.capture = null;
@@ -604,10 +739,11 @@ export class Sim {
         return;
       }
       if (!rs.capture || rs.capture.by !== by) rs.capture = { by, progress: 0 };
-      const training = Math.max(...this.blobsIn(i).map((b) => b.training));
+      const training = Math.max(...this.blobsIn(i).filter((b) => b.owner === by).map((b) => b.training));
       rs.capture.progress += dt / this.world.captureSeconds(i, rs.fort, training);
       if (rs.capture.progress >= 1) {
         const from = rs.owner;
+        if (from !== NEUTRAL) this.state.warActivity.set(pairKey(by, from), this.state.time);
         this.setOwner(i, by);
         this.events.push({ kind: 'captured', region: i, by, from });
         const lost = this.state.players.find((p) => p.alive && p.capital === i && p.id !== by);
@@ -633,6 +769,8 @@ export class Sim {
       if (rs.owner === playerId) this.setOwner(i, NEUTRAL);
     });
     for (const b of [...this.state.blobs.values()]) if (b.owner === playerId) this.remove(b.id);
+    for (const key of [...this.state.wars]) if (key.split(':').map(Number).includes(playerId)) this.state.wars.delete(key);
+    for (const key of [...this.state.peaceOffers.keys()]) if (key.split('>').map(Number).includes(playerId)) this.state.peaceOffers.delete(key);
     this.events.push({ kind: 'eliminated', player: playerId, by });
     const alive = this.state.players.filter((x) => x.alive);
     if (alive.length === 1) {

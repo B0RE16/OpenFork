@@ -67,8 +67,8 @@ export class Game {
     });
   }
 
-  private makeBot(player: number, difficulty: BotDifficulty): Bot {
-    return new Bot(player, difficulty, mulberry32(this.seed * 31 + player));
+  private makeBot(player: number, difficulty: BotDifficulty, standIn = false): Bot {
+    return new Bot(player, difficulty, mulberry32(this.seed * 31 + player), standIn);
   }
 
   playerOf(identity: string): number | null {
@@ -98,7 +98,7 @@ export class Game {
     this.humans.delete(identity);
     this.away.delete(id);
     this.sim.state.players[id].control = 'bot';
-    if (!this.bots.has(id)) this.bots.set(id, this.makeBot(id, this.difficulty));
+    if (!this.bots.has(id)) this.bots.set(id, this.makeBot(id, this.difficulty, true));
   }
 
   order(identity: string, order: Order): string | null {
@@ -123,6 +123,12 @@ export class Game {
         return s.setRepeat(id, order.region, order.building, order.on);
       case 'cancel':
         return s.cancel(id, order.region, order.building);
+      case 'war':
+        return s.declareWar(id, order.player);
+      case 'peace':
+        return s.offerPeace(id, order.player);
+      case 'refuse':
+        return s.refusePeace(id, order.player);
     }
   }
 
@@ -132,7 +138,7 @@ export class Game {
       const p = this.sim.state.players[id];
       if (p.control === 'human' && this.sim.state.time - since >= DISCONNECT_BOT_SECONDS) {
         p.control = 'bot';
-        this.bots.set(id, this.makeBot(id, 'normal'));
+        this.bots.set(id, this.makeBot(id, 'normal', true));
       }
     }
     for (const bot of this.bots.values()) bot.act(this.sim);
@@ -186,7 +192,13 @@ export class Game {
         (b.hold ? 1 : 0) | (b.crossedRiver ? 2 : 0),
       ]);
     }
-    return { time: round(st.time, 1), players, regions, blobs, events };
+    const pair = (key: string, sep: string) => key.split(sep).map(Number) as [number, number];
+    const wars = [...st.wars].map((k) => pair(k, ':'));
+    const offers = [...st.peaceOffers].map(([k, until]) => [...pair(k, '>'), Math.ceil(until - st.time)] as [number, number, number]);
+    const truces = [...st.truces]
+      .filter(([, until]) => until > st.time)
+      .map(([k, until]) => [...pair(k, ':'), Math.ceil(until - st.time)] as [number, number, number]);
+    return { time: round(st.time, 1), players, regions, blobs, events, wars, offers, truces };
   }
 
   productionFor(player: number | null): ProductionView[] {

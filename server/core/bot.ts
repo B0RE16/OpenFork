@@ -1,11 +1,20 @@
 // Bots (DESIGN.md §8). A bot plays one country through the same orders a person uses. It
-// grabs neutral land, keeps its capital guarded, attacks neighbours it outnumbers, builds
-// forts where it's threatened, and keeps its barracks and factories busy. Difficulty sets
-// how often it thinks and how careful and ambitious it is.
-import type { BotDifficulty } from '../../shared/rules.ts';
-import { UNITS } from '../../shared/rules.ts';
+// grabs neutral land, keeps its capital guarded, guards its borders, builds forts, and keeps
+// its barracks and factories busy. It fights only countries it's at war with: ones that
+// attacked it, or (by difficulty) a much weaker neighbour it picks on. It offers peace when
+// a war goes badly or stalls. Difficulty sets how often it thinks and how bold it is.
+import {
+  BOT_DIPLOMACY_SECONDS,
+  BOT_MIN_WAR_SECONDS,
+  BOT_PEACE_STALEMATE_SECONDS,
+  BOT_PEACE_WHEN_WEAKER,
+  type BotDifficulty,
+  OPPORTUNISM,
+  type Opportunism,
+  UNITS,
+} from '../../shared/rules.ts';
 import type { Sim } from './sim.ts';
-import { type Blob, NEUTRAL } from './state.ts';
+import { type Blob, NEUTRAL, pairKey } from './state.ts';
 
 interface Style {
   /** Seconds between decisions. */
@@ -30,14 +39,24 @@ export class Bot {
   readonly player: number;
   private readonly style: Style;
   private readonly random: () => number;
+  private readonly opportunism: Opportunism | null;
   private next = 0;
+  private nextDiplomacy = 0;
   private heading = new Map<number, number>();
+  /** Enemy → when this bot first saw the war. */
+  private readonly warSince = new Map<number, number>();
 
-  constructor(player: number, difficulty: BotDifficulty, random: () => number) {
+  /**
+   * `standIn`: playing for a person who dropped. It defends and makes peace, but never
+   * starts a war on their behalf.
+   */
+  constructor(player: number, difficulty: BotDifficulty, random: () => number, standIn = false) {
     this.player = player;
     this.style = STYLES[difficulty];
+    this.opportunism = standIn ? null : OPPORTUNISM[difficulty];
     this.random = random;
     this.next = random() * this.style.think;
+    this.nextDiplomacy = BOT_DIPLOMACY_SECONDS * (0.5 + random());
   }
 
   act(sim: Sim): void {
@@ -45,8 +64,77 @@ export class Bot {
     this.next = sim.state.time + this.style.think * (0.8 + 0.4 * this.random());
     const me = sim.player(this.player);
     if (!me?.alive || sim.state.winner !== null) return;
+    this.answerOffers(sim);
+    if (sim.state.time >= this.nextDiplomacy) {
+      this.nextDiplomacy = sim.state.time + BOT_DIPLOMACY_SECONDS * (0.8 + 0.4 * this.random());
+      this.diplomacy(sim);
+    }
     this.economy(sim);
     this.army(sim);
+  }
+
+  // -- diplomacy ----------------------------------------------------------------------------
+
+  private strength(sim: Sim, owner: number): number {
+    let s = 0;
+    for (const b of sim.state.blobs.values()) if (b.owner === owner) s += b.strength;
+    return s;
+  }
+
+  private enemies(sim: Sim): number[] {
+    return sim.state.players.filter((p) => p.alive && sim.atWar(this.player, p.id)).map((p) => p.id);
+  }
+
+  /** Countries whose land touches ours. */
+  private neighbours(sim: Sim): Set<number> {
+    const out = new Set<number>();
+    sim.state.regions.forEach((rs, i) => {
+      if (rs.owner !== this.player) return;
+      for (const e of sim.world.neighbors(i)) {
+        const o = sim.state.regions[e.id].owner;
+        if (o !== NEUTRAL && o !== this.player) out.add(o);
+      }
+    });
+    return out;
+  }
+
+  /** Offers of peace to us: take them when the war isn't going our way or has stalled. */
+  private answerOffers(sim: Sim): void {
+    for (const key of [...sim.state.peaceOffers.keys()]) {
+      const [from, to] = key.split('>').map(Number);
+      if (to !== this.player) continue;
+      const mine = this.strength(sim, this.player);
+      const theirs = this.strength(sim, from);
+      const quiet = sim.state.time - (sim.state.warActivity.get(pairKey(from, to)) ?? 0) >= BOT_PEACE_STALEMATE_SECONDS;
+      const fronts = this.enemies(sim).length;
+      if (mine < theirs * 1.2 || quiet || fronts > 1) sim.offerPeace(this.player, from);
+      else sim.refusePeace(this.player, from);
+    }
+  }
+
+  private diplomacy(sim: Sim): void {
+    const now = sim.state.time;
+    const mine = this.strength(sim, this.player);
+    const enemies = this.enemies(sim);
+    for (const e of [...this.warSince.keys()]) if (!enemies.includes(e)) this.warSince.delete(e);
+    // Wars going badly, or stuck: offer peace.
+    for (const e of enemies) {
+      if (!this.warSince.has(e)) this.warSince.set(e, now);
+      if (now - (this.warSince.get(e) as number) < BOT_MIN_WAR_SECONDS) continue;
+      if (sim.state.peaceOffers.has(`${this.player}>${e}`)) continue;
+      const losing = mine < this.strength(sim, e) * BOT_PEACE_WHEN_WEAKER;
+      const stalled = now - (sim.state.warActivity.get(pairKey(this.player, e)) ?? now) >= BOT_PEACE_STALEMATE_SECONDS;
+      if (losing || stalled) sim.offerPeace(this.player, e);
+    }
+    // Picking on a much weaker neighbour (never on easy, rarely on normal).
+    const opp = this.opportunism;
+    if (!opp || now < opp.after || enemies.length >= opp.maxWars) return;
+    const prey = [...this.neighbours(sim)]
+      .filter((p) => !sim.atWar(this.player, p) && !sim.inTruce(this.player, p))
+      .map((p) => ({ p, s: this.strength(sim, p) }))
+      .filter((x) => mine >= x.s * opp.ratio)
+      .sort((a, b) => a.s - b.s)[0];
+    if (prey && this.random() < opp.chance) sim.declareWar(this.player, prey.p);
   }
 
   // -- building and production ------------------------------------------------------------
@@ -73,6 +161,16 @@ export class Bot {
       .filter((x) => x.threat > 0 && regions[x.r].fort < this.style.forts && regions[x.r].supplied && !regions[x.r].construction)
       .sort((a, b) => b.threat - a.threat);
     if (threatened.length && sim.build(this.player, threatened[0].r, 'fort') === null) return;
+
+    // In peacetime too: dig in on borders where a neighbour's army stands close.
+    if (me.resources.money > this.style.reserve * 2) {
+      const border = mine
+        .filter((r) => regions[r].fort < Math.max(1, this.style.forts - 1) && regions[r].supplied && !regions[r].construction)
+        .map((r) => ({ r, foreign: this.foreignNear(sim, r) }))
+        .filter((x) => x.foreign > 0)
+        .sort((a, b) => b.foreign - a.foreign)[0];
+      if (border && sim.build(this.player, border.r, 'fort') === null) return;
+    }
 
     // Factories once there's steel to use.
     const factories = mine.filter((r) => regions[r].factory).length;
@@ -172,7 +270,8 @@ export class Bot {
       if (sim.state.regions[b.region].owner === this.player && this.threat(sim, b.region) > 0 && b.region !== me.capital) {
         continue; // hold the line
       }
-      const target = this.expandTarget(sim, b, targeted) ?? this.stagingArea(sim, b) ?? this.nearestEnemy(sim, b);
+      const target =
+        this.expandTarget(sim, b, targeted) ?? this.stagingArea(sim, b) ?? this.nearestEnemy(sim, b) ?? this.borderPost(sim, b);
       if (target === null || target === b.region) continue;
       targeted.add(target);
       sim.move(this.player, [b.id], target);
@@ -191,8 +290,7 @@ export class Bot {
     for (const r of ours) {
       for (const e of [{ id: r }, ...sim.world.neighbors(r)]) {
         const rs = sim.state.regions[e.id];
-        const enemyLand = rs.owner !== this.player && rs.owner !== NEUTRAL;
-        if (enemyLand || sim.hostileIn(e.id, this.player)) out.add(e.id);
+        if (sim.atWar(this.player, rs.owner) || sim.hostileIn(e.id, this.player)) out.add(e.id);
       }
     }
     // Weakest first.
@@ -219,10 +317,7 @@ export class Bot {
     sim.state.regions.forEach((rs, i) => {
       if (rs.owner !== this.player || dist[i] < 0 || dist[i] >= bestD) return;
       if ((this.heading.get(i) ?? 0) >= sim.stackCap(i)) return;
-      const front = sim.world.neighbors(i).some((e) => {
-        const o = sim.state.regions[e.id].owner;
-        return o !== this.player && o !== NEUTRAL;
-      });
+      const front = sim.world.neighbors(i).some((e) => sim.atWar(this.player, sim.state.regions[e.id].owner));
       if (front) {
         bestD = dist[i];
         best = i;
@@ -240,12 +335,37 @@ export class Bot {
     sim.state.regions.forEach((rs, i) => {
       if (dist[i] < 0 || dist[i] >= bestD) return;
       if ((this.heading.get(i) ?? 0) >= sim.stackCap(i)) return;
-      if ((rs.owner !== NEUTRAL && rs.owner !== this.player) || sim.hostileIn(i, this.player)) {
+      if (sim.atWar(this.player, rs.owner) || sim.hostileIn(i, this.player)) {
         bestD = dist[i];
         best = i;
       }
     });
     return best;
+  }
+
+  /** In peacetime: an own region bordering another country, with room (stronger ones first). */
+  private borderPost(sim: Sim, b: Blob): number | null {
+    if (sim.state.regions[b.region].owner === this.player && this.bordersCountry(sim, b.region)) return null; // already on guard
+    const dist = this.bfs(sim, b.region);
+    let best: number | null = null;
+    let bestScore = Infinity;
+    sim.state.regions.forEach((rs, i) => {
+      if (rs.owner !== this.player || dist[i] < 0 || !this.bordersCountry(sim, i)) return;
+      if ((this.heading.get(i) ?? 0) >= Math.max(1, sim.stackCap(i) - 1)) return;
+      const score = dist[i] + (this.heading.get(i) ?? 0) * 3;
+      if (score < bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    });
+    return best;
+  }
+
+  private bordersCountry(sim: Sim, region: number): boolean {
+    return sim.world.neighbors(region).some((e) => {
+      const o = sim.state.regions[e.id].owner;
+      return o !== NEUTRAL && o !== this.player;
+    });
   }
 
   /** Nearest neutral region nobody of ours is already heading for. */
@@ -278,11 +398,20 @@ export class Bot {
     }
   }
 
+  /** Other countries' units standing next to a region (at war or not). */
+  private foreignNear(sim: Sim, region: number): number {
+    let t = 0;
+    for (const e of sim.world.neighbors(region)) {
+      for (const b of sim.blobsIn(e.id)) if (b.owner !== this.player) t += b.strength;
+    }
+    return t;
+  }
+
   /** Enemy strength standing next to (or in) a region. */
   private threat(sim: Sim, region: number): number {
     let t = 0;
     for (const r of [region, ...sim.world.neighbors(region).map((n) => n.id)]) {
-      for (const b of sim.blobsIn(r)) if (b.owner !== this.player) t += b.strength;
+      for (const b of sim.blobsIn(r)) if (sim.atWar(this.player, b.owner)) t += b.strength;
     }
     return t;
   }
@@ -291,7 +420,7 @@ export class Bot {
     const dist = this.bfs(sim, region);
     let best = Infinity;
     sim.state.regions.forEach((rs, i) => {
-      if (rs.owner !== this.player && rs.owner !== NEUTRAL && dist[i] >= 0) best = Math.min(best, dist[i]);
+      if (rs.owner !== this.player && rs.owner !== NEUTRAL && dist[i] >= 0) best = Math.min(best, dist[i] - (sim.atWar(this.player, rs.owner) ? 0.5 : 0));
     });
     return best;
   }
@@ -301,13 +430,18 @@ export class Bot {
     return d < 0 ? Infinity : d;
   }
 
+  /** Hops from a region, not through land of countries we're at peace with (it's closed). */
   private bfs(sim: Sim, from: number): number[] {
     const dist = new Array<number>(sim.world.regions.length).fill(-1);
     dist[from] = 0;
     const queue = [from];
+    const closed = (r: number) => {
+      const o = sim.state.regions[r].owner;
+      return o !== NEUTRAL && o !== this.player && !sim.atWar(this.player, o);
+    };
     for (let q = 0; q < queue.length; q++) {
       for (const e of sim.world.neighbors(queue[q])) {
-        if (dist[e.id] < 0) {
+        if (dist[e.id] < 0 && !closed(e.id)) {
           dist[e.id] = dist[queue[q]] + 1;
           queue.push(e.id);
         }

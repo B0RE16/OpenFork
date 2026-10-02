@@ -17,7 +17,13 @@ export type Order =
   | { o: 'build'; region: number; kind: BuildingKind }
   | { o: 'produce'; region: number; building: ProductionBuilding }
   | { o: 'repeat'; region: number; building: ProductionBuilding; on: boolean }
-  | { o: 'cancel'; region: number; building: ProductionBuilding };
+  | { o: 'cancel'; region: number; building: ProductionBuilding }
+  /** Declare war on a country. */
+  | { o: 'war'; player: number }
+  /** Offer peace to a country, or accept its offer. */
+  | { o: 'peace'; player: number }
+  /** Turn down a country's offer of peace. */
+  | { o: 'refuse'; player: number };
 
 export interface LobbySettings {
   map: string;
@@ -95,6 +101,10 @@ export interface ProductionView {
 }
 
 export type GameEvent =
+  | { kind: 'war'; a: number; b: number; by: number }
+  | { kind: 'peace'; a: number; b: number }
+  | { kind: 'peaceOffer'; from: number; to: number }
+  | { kind: 'peaceRefused'; from: number; to: number }
   | { kind: 'battle'; region: number; sides: number[] }
   | { kind: 'captured'; region: number; by: number; from: number }
   | { kind: 'built'; region: number; owner: number; building: BuildingKind; level: number }
@@ -109,6 +119,12 @@ export interface Snapshot {
   blobs: BlobRow[];
   production: ProductionView[];
   events: GameEvent[];
+  /** Pairs of countries at war. */
+  wars: Array<[number, number]>;
+  /** Standing offers of peace: [from, to, seconds left]. */
+  offers: Array<[number, number, number]>;
+  /** Truces: [a, b, seconds left]. */
+  truces: Array<[number, number, number]>;
 }
 
 export type ServerMessage =

@@ -52,8 +52,8 @@ export const UNITS: Record<UnitType, UnitStats> = {
     attack: 1,
     defense: 1.2,
     terrainAttack: { plains: 1, forest: 1, hills: 1, mountains: 1 },
-    cost: { money: 40, manpower: 30, steel: 0, oil: 0 },
-    buildTime: 12,
+    cost: { money: 50, manpower: 40, steel: 0, oil: 0 },
+    buildTime: 20,
     upkeep: 0.02,
     refillCost: { money: 1, manpower: 2, steel: 0, oil: 0 },
     supplyNeed: 1,
@@ -66,8 +66,8 @@ export const UNITS: Record<UnitType, UnitStats> = {
     attack: 2.5,
     defense: 1.5,
     terrainAttack: { plains: 1.2, forest: 0.6, hills: 0.7, mountains: 0.4 },
-    cost: { money: 70, manpower: 10, steel: 30, oil: 15 },
-    buildTime: 20,
+    cost: { money: 90, manpower: 12, steel: 38, oil: 18 },
+    buildTime: 30,
     upkeep: 0.06,
     refillCost: { money: 3, manpower: 1, steel: 3, oil: 1 },
     supplyNeed: 2,
@@ -92,7 +92,7 @@ export const RETREAT_TRAINING_LOSS = 10;
 // -- capturing --------------------------------------------------------------------------------
 
 /** Seconds to capture an empty medium plains region with untrained blobs, before modifiers. */
-export const CAPTURE_SECONDS = 4;
+export const CAPTURE_SECONDS = 6.5;
 export const CAPTURE_SIZE: Record<RegionSize, number> = { small: 0.7, medium: 1, large: 1.4 };
 export const CAPTURE_TERRAIN: Record<Terrain, number> = { plains: 1, forest: 1.2, hills: 1.3, mountains: 1.6 };
 /** Each fort level adds this share to capture time. */
@@ -200,6 +200,36 @@ export function canBuildOn(kind: BuildingKind, traits: readonly Trait[]): boolea
 /** Regions around the capital owned at the start (besides the capital). */
 export const START_EXTRA_REGIONS = 4;
 export const START_INFANTRY = 3;
+
+// -- diplomacy --------------------------------------------------------------------------------
+
+/** After making peace, neither side may declare war for this long. */
+export const TRUCE_SECONDS = 180;
+/** A peace offer stands this long. */
+export const PEACE_OFFER_SECONDS = 30;
+
+/** When bots start wars nobody provoked: against a bordering country this much weaker. */
+export interface Opportunism {
+  /** Not before this many seconds into the match. */
+  after: number;
+  /** Our strength must be at least this many times theirs. */
+  ratio: number;
+  /** Chance per diplomacy check (every BOT_DIPLOMACY_SECONDS) that it acts on it. */
+  chance: number;
+  /** Wars it will fight at once (it never starts one beyond this). */
+  maxWars: number;
+}
+export const OPPORTUNISM: Record<BotDifficulty, Opportunism | null> = {
+  easy: null,
+  normal: { after: 300, ratio: 2, chance: 0.15, maxWars: 1 },
+  hard: { after: 180, ratio: 1.6, chance: 0.35, maxWars: 2 },
+};
+export const BOT_DIPLOMACY_SECONDS = 45;
+/** Bots offer peace when they're this much weaker than the enemy, or after a long stalemate. */
+export const BOT_PEACE_WHEN_WEAKER = 0.7;
+export const BOT_PEACE_STALEMATE_SECONDS = 240;
+/** Wars last at least this long before a bot offers peace. */
+export const BOT_MIN_WAR_SECONDS = 180;
 
 // -- lobby ------------------------------------------------------------------------------------
 
