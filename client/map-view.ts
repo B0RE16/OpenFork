@@ -22,18 +22,17 @@ interface Placed {
 
 /** One token or stack to draw this frame. */
 interface Item {
-  /** Stable across frames: 'b:<unit>' for a single unit, 's:<owner>:<region>' for a stack,
-   * 'm:...' for units moving together. */
+  /** 'b:<unit>' for a single unit, 's:<owner>:<region>' for a stack of parked units,
+   * 't:<owner>:<region>:<next>' for a stack on the move. */
   key: string;
   rows: BlobRow[];
   owner: number;
+  /** On the move (travelling to the next region or passing through). */
   moving: boolean;
-  /** Target position in map coordinates. */
+  /** Position in map coordinates. */
   tx: number;
   ty: number;
 }
-
-const SNAP_MS = 200;
 
 export class MapView {
   readonly canvas: HTMLCanvasElement;
@@ -54,14 +53,6 @@ export class MapView {
   private supplyKey = '';
   private supply: SupplyInfo | null = null;
   private placed: Placed[] = [];
-  /** Map-space anchor of each blob in the previous and current snapshot, for smooth moves. */
-  private prevPos = new Map<number, [number, number]>();
-  private currPos = new Map<number, [number, number]>();
-  private snapAt = 0;
-  /** Eased display position of each item (map coordinates), and which item showed each unit. */
-  private display = new Map<string, [number, number]>();
-  private itemOf = new Map<number, string>();
-  private lastFrame = performance.now();
 
   constructor(canvas: HTMLCanvasElement, map: GameMap, terrain: HTMLImageElement) {
     this.canvas = canvas;
@@ -181,24 +172,6 @@ export class MapView {
   }
 
   // -- state --------------------------------------------------------------------------------
-
-  /** A new snapshot came in: remember where every blob was, for smooth movement. */
-  takeSnapshot(snap: Snapshot): void {
-    this.prevPos = this.currPos;
-    this.currPos = new Map();
-    for (const b of snap.blobs) this.currPos.set(b[0], this.anchor(b));
-    this.snapAt = performance.now();
-  }
-
-  /** Where a unit is on its road (map coordinates). */
-  private anchor(b: BlobRow): [number, number] {
-    const from = this.map.regions[b[6]];
-    if (b[7] < 0 || b[8] <= 0) return [from.x, from.y];
-    const to = this.map.regions[b[7]];
-    // Units waiting at the edge of a full region stop a little short of it.
-    const t = b[8] >= 1 ? 0.85 : b[8];
-    return [from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t];
-  }
 
   private updateTerritory(regions: RegionRow[], players: GamePlayer[]): void {
     const key = regions.map((r) => `${r[0]}${r[3] & 4 ? '' : 'x'}`).join(',');
@@ -495,75 +468,48 @@ export class MapView {
   }
 
   /**
-   * Units: grouped into items (single tokens, per-country stacks, units moving together),
-   * eased toward where they belong so nothing ever snaps, with routes and arrows below.
+   * Units: grouped into items (single tokens or per-country stacks) laid out under each
+   * region's label. Units on the move stay in their region (with a progress bar) until they
+   * hop to the next one; nothing slides. Routes and arrows are drawn under the tokens.
    */
   private drawBlobs(snap: Snapshot, players: GamePlayer[], selected: Set<number>, you: number | null): void {
     const ctx = this.ctx;
     const now = performance.now();
-    const ease = 1 - Math.exp(-Math.min(0.1, (now - this.lastFrame) / 1000) * 12);
-    this.lastFrame = now;
     const px = this.pixel();
     const scale = this.cam.scale;
-    const t = Math.min(1, (now - this.snapAt) / SNAP_MS);
     const atWar = (a: number, b: number) => snap.wars.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
+    // On the move: travelling to the next region, or passing through on the way.
+    const transit = (b: BlobRow) => b[8] > 0 || (b[7] >= 0 && !(b[11] & 1));
 
-    // Moving (or passing through a region on the way) vs standing.
-    const moving: BlobRow[] = [];
-    const standing = new Map<number, BlobRow[]>();
-    for (const b of snap.blobs) {
-      const passing = b[8] === 0 && b[7] >= 0 && !(b[11] & 1);
-      if (b[8] > 0 || passing) moving.push(b);
-      else standing.set(b[6], [...(standing.get(b[6]) ?? []), b]);
-    }
-    const road = (b: BlobRow): [number, number] => {
-      const cur = this.currPos.get(b[0]) ?? this.anchor(b);
-      const prev = this.prevPos.get(b[0]) ?? cur;
-      return [prev[0] + (cur[0] - prev[0]) * t, prev[1] + (cur[1] - prev[1]) * t];
-    };
+    const byRegion = new Map<number, BlobRow[]>();
+    for (const b of snap.blobs) byRegion.set(b[6], [...(byRegion.get(b[6]) ?? []), b]);
 
+    // Individual tokens if zoomed in and they fit, else one stack per country for its parked
+    // units and one per next region for its units on the move.
     const items: Item[] = [];
-    // Units on the same road close together move as one item.
-    const roads = new Map<string, BlobRow[]>();
-    for (const b of moving) {
-      const k = `${b[1]}:${b[6]}:${b[7]}`;
-      roads.set(k, [...(roads.get(k) ?? []), b]);
-    }
-    for (const [k, list] of roads) {
-      list.sort((a, b) => a[8] - b[8]);
-      let group: BlobRow[] = [];
-      const flush = () => {
-        if (!group.length) return;
-        const ps = group.map(road);
-        const tx = ps.reduce((s, p) => s + p[0], 0) / ps.length;
-        const ty = ps.reduce((s, p) => s + p[1], 0) / ps.length;
-        const key = group.length === 1 ? `b:${group[0][0]}` : `m:${k}:${Math.min(...group.map((b) => b[0]))}`;
-        items.push({ key, rows: group, owner: group[0][1], moving: true, tx, ty });
-        group = [];
-      };
-      for (const b of list) {
-        if (group.length && b[8] - group[0][8] > 0.15) flush();
-        group.push(b);
-      }
-      flush();
-    }
-
-    // Standing units: individual tokens if zoomed in and they fit, else one stack per country.
     const step = Math.max(FRAME_W * px, PLATE_MIN_W) + 3;
     const sideGap = 14 * px;
     const swords: Array<[number, number]> = [];
-    for (const [region, list] of standing) {
+    for (const [region, list] of byRegion) {
       const reg = this.map.regions[region];
       const byOwner = new Map<number, BlobRow[]>();
       for (const b of [...list].sort((a, b) => b[3] - a[3])) byOwner.set(b[1], [...(byOwner.get(b[1]) ?? []), b]);
       const owners = [...byOwner.keys()].sort((a, b) => (a === you ? -1 : b === you ? 1 : a - b));
       const fits = list.length * step + (owners.length - 1) * sideGap <= Math.sqrt(reg.area) * scale * 0.9;
       const single = px >= 2 && fits;
-      const slots: Array<{ key: string; rows: BlobRow[]; owner: number }> = [];
+      const slots: Array<{ key: string; rows: BlobRow[]; owner: number; moving: boolean }> = [];
       for (const o of owners) {
         const rows = byOwner.get(o) as BlobRow[];
-        if (single) for (const b of rows) slots.push({ key: `b:${b[0]}`, rows: [b], owner: o });
-        else slots.push({ key: `s:${o}:${region}`, rows, owner: o });
+        const parked = rows.filter((b) => !transit(b));
+        const going = new Map<number, BlobRow[]>();
+        for (const b of rows) if (transit(b)) going.set(b[7], [...(going.get(b[7]) ?? []), b]);
+        if (single) {
+          for (const b of parked) slots.push({ key: `b:${b[0]}`, rows: [b], owner: o, moving: false });
+          for (const g of going.values()) for (const b of g) slots.push({ key: `b:${b[0]}`, rows: [b], owner: o, moving: true });
+        } else {
+          if (parked.length) slots.push({ key: `s:${o}:${region}`, rows: parked, owner: o, moving: false });
+          for (const [next, g] of going) slots.push({ key: `t:${o}:${region}:${next}`, rows: g, owner: o, moving: true });
+        }
       }
       const width = slots.length * step + (owners.length - 1) * sideGap;
       let x = -width / 2 + step / 2;
@@ -574,7 +520,7 @@ export class MapView {
           if (atWar(prev, slot.owner)) swords.push([reg.x + (x - step / 2 + sideGap / 2) / scale, reg.y + 14 / scale]);
           x += sideGap;
         }
-        items.push({ key: slot.key, rows: slot.rows, owner: slot.owner, moving: false, tx: reg.x + x / scale, ty: reg.y + 14 / scale });
+        items.push({ ...slot, tx: reg.x + x / scale, ty: reg.y + 14 / scale });
         x += step;
         prev = slot.owner;
       }
@@ -582,62 +528,52 @@ export class MapView {
 
     this.declutter(items, step, FRAME_H * px + 4 * px + plateHeight(px));
 
-    // Ease every item toward its target; a new item starts where its units were last drawn.
-    const display = new Map<string, [number, number]>();
-    const itemOf = new Map<number, string>();
-    for (const it of items) {
-      let d = this.display.get(it.key);
-      if (!d) {
-        for (const b of it.rows) {
-          const was = this.display.get(this.itemOf.get(b[0]) ?? '');
-          if (was) {
-            d = [was[0], was[1]];
-            break;
-          }
-        }
-      }
-      d ??= [it.tx, it.ty];
-      d[0] += (it.tx - d[0]) * ease;
-      d[1] += (it.ty - d[1]) * ease;
-      display.set(it.key, d);
-      for (const b of it.rows) itemOf.set(b[0], it.key);
-    }
-    this.display = display;
-    this.itemOf = itemOf;
-
     // Routes (yours) and next-hop arrows (everyone else's), under the tokens.
     const routes = new Map(snap.routes.map((r) => [r[0], r.slice(1)]));
-    const markers = new Set<number>();
+    /** Destination region → heading there with a selected unit. */
+    const destinations = new Map<number, boolean>();
     for (const it of items) {
-      const [sx, sy] = this.toScreen(...(display.get(it.key) as [number, number]));
+      if (!it.moving) continue;
+      const [sx, sy] = this.toScreen(it.tx, it.ty);
       const color = colorOf(players, it.owner);
       if (it.owner === you) {
-        const route = routes.get(it.rows[0][0]);
-        if (!route?.length) continue;
         const sel = it.rows.some((b) => selected.has(b[0]));
-        ctx.globalAlpha = sel ? 1 : 0.35;
-        let [ax, ay] = [sx, sy];
-        for (const r of route) {
-          const reg = this.map.regions[r];
-          const [bx, by] = this.toScreen(reg.x, reg.y);
-          dottedLine(ctx, ax, ay, bx, by + 14, color, px);
-          [ax, ay] = [bx, by + 14];
+        const drawn = new Set<string>();
+        for (const b of it.rows) {
+          const route = routes.get(b[0]);
+          if (!route?.length) continue;
+          const dest = route[route.length - 1];
+          destinations.set(dest, (destinations.get(dest) ?? false) || selected.has(b[0]));
+          if (drawn.has(route.join())) continue;
+          drawn.add(route.join());
+          ctx.globalAlpha = sel ? 1 : 0.35;
+          let [ax, ay] = [sx, sy];
+          for (const r of route) {
+            const reg = this.map.regions[r];
+            const [bx, by] = this.toScreen(reg.x, reg.y);
+            dottedLine(ctx, ax, ay, bx, by + 14, color, px);
+            [ax, ay] = [bx, by + 14];
+          }
+          ctx.globalAlpha = 1;
         }
-        ctx.globalAlpha = 1;
-        if (sel) markers.add(route[route.length - 1]);
-      } else if (it.moving && it.rows[0][7] >= 0) {
+      } else if (it.rows[0][7] >= 0) {
         const next = this.map.regions[it.rows[0][7]];
         const [nx, ny] = this.toScreen(next.x, next.y + 14 / scale);
         arrow(ctx, sx, sy, nx, ny, (FRAME_W * px) / 2 + 3 * px, color, px);
       }
     }
-    const blink = Math.floor(now / 300) % 2;
-    for (const r of markers) {
-      if (!blink) continue;
-      const reg = this.map.regions[r];
-      const [mx, my] = this.toScreen(reg.x, reg.y);
-      brackets(ctx, Math.round(mx), Math.round(my + 14), 12 * px, '#ffffff', px);
+    // A down arrow over each place your units are heading: bright if a selected unit is.
+    if (you !== null) {
+      const color = colorOf(players, you);
+      for (const [r, sel] of destinations) {
+        const reg = this.map.regions[r];
+        const [mx, my] = this.toScreen(reg.x, reg.y);
+        ctx.globalAlpha = sel ? 1 : 0.35;
+        destArrow(ctx, Math.round(mx), Math.round(my + 14 - (FRAME_H * px) / 2 - 2 * px), color, px + 1);
+        ctx.globalAlpha = 1;
+      }
     }
+    const blink = Math.floor(now / 300) % 2;
     for (const [wx, wy] of swords) {
       const [x, y] = this.toScreen(wx, wy);
       blitCentred(ctx, ICONS.swords[blink], Math.round(x), Math.round(y), px);
@@ -647,18 +583,18 @@ export class MapView {
     const placed: Placed[] = [];
     const r = (FRAME_W * px) / 2;
     for (const it of items) {
-      const [x, y] = this.toScreen(...(display.get(it.key) as [number, number]));
+      const [x, y] = this.toScreen(it.tx, it.ty);
       const p = { ids: it.rows.map((b) => b[0]), x: Math.round(x), y: Math.round(y), r };
-      this.drawItem(it.rows, p, players, it.rows.some((b) => selected.has(b[0])), px);
+      this.drawItem(it, p, players, it.rows.some((b) => selected.has(b[0])), px);
       placed.push(p);
     }
     this.placed = placed;
   }
 
   /**
-   * Zoomed out, neighbouring regions' units and units on the roads pile up on screen. Items
-   * of one country that would overlap become one stack (the biggest one's place and key);
-   * items of different countries that overlap are pushed apart.
+   * Zoomed out, neighbouring regions' units pile up on screen. Items of one country that
+   * would overlap become one stack (parked and moving units never mix); items of different
+   * countries that overlap are pushed apart.
    */
   private declutter(items: Item[], w: number, h: number): void {
     const scale = this.cam.scale;
@@ -673,18 +609,17 @@ export class MapView {
     const gone = new Set<Item>();
     for (const it of onScreen) {
       const host = kept.find(
-        (k) => k.owner === it.owner && Math.abs(k.tx - it.tx) * scale < w * 0.9 && Math.abs(k.ty - it.ty) * scale < h * 0.9,
+        (k) => k.owner === it.owner && k.moving === it.moving && Math.abs(k.tx - it.tx) * scale < w * 0.9 && Math.abs(k.ty - it.ty) * scale < h * 0.9,
       );
       if (host) {
         host.rows = [...host.rows, ...it.rows].sort((a, b) => b[3] - a[3]);
-        host.moving &&= it.moving;
         gone.add(it);
       } else kept.push(it);
     }
     for (let i = items.length - 1; i >= 0; i--) if (gone.has(items[i])) items.splice(i, 1);
 
     // Different countries: a few rounds of pushing overlapping pairs apart (sideways mostly).
-    for (let round = 0; round < 4; round++) {
+    for (let round = 0; round < 12; round++) {
       let moved = false;
       for (let i = 0; i < kept.length; i++) {
         for (let j = i + 1; j < kept.length; j++) {
@@ -762,8 +697,9 @@ export class MapView {
    * (with a "deck" of frames behind for a stack), a strength bar, the strength number and,
    * for a stack, how many units are in it.
    */
-  private drawItem(rows: BlobRow[], p: Placed, players: GamePlayer[], selected: boolean, px: number): void {
+  private drawItem(it: Item, p: Placed, players: GamePlayer[], selected: boolean, px: number): void {
     const ctx = this.ctx;
+    const rows = it.rows;
     const color = colorOf(players, rows[0][1]);
     const byType = new Map<string, number>();
     for (const b of rows) byType.set(UNIT_INDEX[b[2]], (byType.get(UNIT_INDEX[b[2]]) ?? 0) + b[3]);
@@ -821,6 +757,18 @@ export class MapView {
       ctx.fillRect(cx, y0 + px, px, px);
       ctx.fillRect(cx + px, y0 + 2 * px, px, px);
       ctx.fillRect(cx + 2 * px, y0 + px, px, px);
+    }
+    // On the move: a bar of 5 cells left of the frame fills up until the hop to the next region.
+    if (it.moving) {
+      const progress = Math.min(1, Math.max(...rows.map((b) => b[8])));
+      const bx = x0 - 3 * px;
+      ctx.fillStyle = INK;
+      ctx.fillRect(bx - px, y0, 3 * px, h);
+      const cell = (h - 2 * px) / 5;
+      for (let i = 0; i < 5; i++) {
+        ctx.fillStyle = progress > i / 5 + 0.02 ? '#ffffff' : '#2c3a44';
+        ctx.fillRect(bx, Math.round(y0 + h - px - (i + 1) * cell), px, Math.max(px, Math.round(cell) - px));
+      }
     }
     // Selected: blinking corner brackets.
     if (selected && Math.floor(performance.now() / 400) % 2 === 0) {
@@ -920,6 +868,17 @@ function brackets(ctx: CanvasRenderingContext2D, x: number, y: number, half: num
     ctx.fillRect(dx > 0 ? cx : cx - l + px, cy, l, px);
     ctx.fillRect(cx, dy > 0 ? cy : cy - l + px, px, l);
   }
+}
+
+/** A pixel arrow pointing down, its tip at (x, y): where your units are heading. */
+function destArrow(ctx: CanvasRenderingContext2D, x: number, y: number, color: string, px: number): void {
+  // Rows from the top: a 3-wide shaft, then the head narrowing to the tip.
+  const widths = [3, 3, 3, 7, 5, 3, 1];
+  const top = y - widths.length * px;
+  ctx.fillStyle = INK;
+  widths.forEach((w, i) => ctx.fillRect(x - Math.floor((w + 2) / 2) * px, top + (i - 1) * px, (w + 2) * px, 3 * px));
+  ctx.fillStyle = color;
+  widths.forEach((w, i) => ctx.fillRect(x - Math.floor(w / 2) * px, top + i * px, w * px, px));
 }
 
 /** Three pixel dots, growing, pointing from (x0, y0) toward (x1, y1), starting `skip` out. */
