@@ -7,6 +7,7 @@ import {
   BASE_YIELD,
   BROKE_LOSS,
   BROKE_TRAINING,
+  BUILD_QUEUE,
   buildCost,
   CAPTURE_DECAY,
   canBuildOn,
@@ -483,13 +484,43 @@ export class Sim {
     if (!p?.alive) return 'you are not in the game';
     if (!rs || rs.owner !== playerId) return 'not your region';
     if (!rs.supplied) return 'region is out of supply';
-    if (rs.construction) return 'already building here';
     if (!canBuildOn(kind, this.world.regions[region].traits)) return `can't build a ${kind} here`;
-    const level = this.levelOf(rs, kind) + 1;
+    const level = this.nextLevel(rs, kind);
     if (level > MAX_LEVEL[kind]) return 'already at the highest level';
+    if (rs.construction && rs.buildQueue.length >= BUILD_QUEUE) return 'build queue is full';
     const { cost, seconds } = buildCost(kind, level);
     if (!this.pay(p, cost)) return 'not enough resources';
-    rs.construction = { kind, level, progress: 0, seconds };
+    const c = { kind, level, progress: 0, seconds, cost };
+    if (rs.construction) rs.buildQueue.push(c);
+    else rs.construction = c;
+    return null;
+  }
+
+  /** The level the next build of `kind` in a region would reach, counting queued ones. */
+  nextLevel(rs: RegionState, kind: BuildingKind): number {
+    const pending = [rs.construction, ...rs.buildQueue].filter((c) => c?.kind === kind).length;
+    return this.levelOf(rs, kind) + pending + 1;
+  }
+
+  /**
+   * Cancels a build (0: the one under way, 1+: waiting) and every later build of the same
+   * kind, whose levels depended on it. Everything cancelled is refunded in full.
+   */
+  unbuild(playerId: number, region: number, index: number): string | null {
+    const rs = this.state.regions[region];
+    if (!this.player(playerId)?.alive) return 'you are not in the game';
+    if (!rs || rs.owner !== playerId) return 'not your region';
+    const all = rs.construction ? [rs.construction, ...rs.buildQueue] : [];
+    const target = all[index];
+    if (!target) return 'nothing to cancel';
+    const drop = new Set(all.filter((c, i) => i >= index && c.kind === target.kind));
+    for (const c of drop) this.refund(this.state.players[playerId], c.cost);
+    const keep = all.filter((c) => !drop.has(c));
+    if (rs.construction && drop.has(rs.construction)) {
+      rs.construction = keep.shift() ?? null;
+      if (rs.construction) rs.construction.progress = 0;
+    } else keep.shift();
+    rs.buildQueue = keep;
     return null;
   }
 
@@ -767,6 +798,7 @@ export class Sim {
     rs.capture = null;
     rs.cutOff = 0;
     rs.construction = null;
+    rs.buildQueue = [];
     rs.production = { barracks: emptyLine(), factory: emptyLine() };
   }
 
@@ -825,7 +857,7 @@ export class Sim {
     if (c.kind === 'fort') rs.fort = c.level;
     else if (c.kind === 'infra') rs.infra = c.level;
     else rs[c.kind] = true;
-    rs.construction = null;
+    rs.construction = rs.buildQueue.shift() ?? null;
     this.events.push({ kind: 'built', region, owner: rs.owner, building: c.kind, level: c.level });
   }
 

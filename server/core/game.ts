@@ -123,6 +123,8 @@ export class Game {
         return s.setRepeat(id, order.region, order.building, order.on);
       case 'cancel':
         return s.cancel(id, order.region, order.building);
+      case 'unbuild':
+        return s.unbuild(id, order.region, order.index);
       case 'war':
         return s.declareWar(id, order.player);
       case 'peace':
@@ -155,7 +157,7 @@ export class Game {
   }
 
   /** The parts of a snapshot that are the same for everyone. */
-  sharedSnapshot(events: GameEvent[]): Omit<Snapshot, 'production' | 'routes'> {
+  sharedSnapshot(events: GameEvent[]): Omit<Snapshot, 'production' | 'routes' | 'builds'> {
     const st = this.sim.state;
     const players: PlayerRow[] = st.players.map((p) => ({
       alive: p.alive,
@@ -206,6 +208,16 @@ export class Game {
     if (player === null) return [];
     const out: number[][] = [];
     for (const b of this.sim.state.blobs.values()) if (b.owner === player && b.path.length) out.push([b.id, ...b.path]);
+    return out;
+  }
+
+  /** The builds waiting in each of `player`'s regions: [region, building index...]. */
+  buildsFor(player: number | null): number[][] {
+    if (player === null) return [];
+    const out: number[][] = [];
+    this.sim.state.regions.forEach((r, i) => {
+      if (r.owner === player && r.buildQueue.length) out.push([i, ...r.buildQueue.map((c) => BUILDING_INDEX.indexOf(c.kind))]);
+    });
     return out;
   }
 

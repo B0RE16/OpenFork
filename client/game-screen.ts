@@ -3,6 +3,7 @@ import type { GameMap, Region } from '../shared/map.ts';
 import type { BlobRow, GameEvent, GamePlayer, Order, ProductionView, Snapshot } from '../shared/protocol.ts';
 import { BUILDING_INDEX, UNIT_INDEX } from '../shared/protocol.ts';
 import {
+  BUILD_QUEUE,
   type BuildingKind,
   buildCost,
   canBuildOn,
@@ -16,7 +17,7 @@ import {
 } from '../shared/rules.ts';
 import { colorOf, MapView } from './map-view.ts';
 import type { Net } from './net.ts';
-import { hudIcon } from './sprites.ts';
+import { hudIcon, ICONS, spriteUrl } from './sprites.ts';
 import { $, cellBar, classbar, confirmBox, el, fmt, toast } from './ui.ts';
 
 const BUILD_LABEL: Record<BuildingKind, string> = { barracks: 'Barracks', factory: 'Factory', fort: 'Fort', infra: 'Infrastructure' };
@@ -32,6 +33,11 @@ export class GameScreen {
   private snap: Snapshot | null = null;
   private selected = new Set<number>();
   private region = -1;
+  /** Placement mode: the building a click on one of your regions puts there. */
+  private placing: BuildingKind | null = null;
+  /** The region under the cursor. */
+  private hover = -1;
+  private buildbarKey = '';
   private box: [number, number, number, number] | null = null;
   private feed: Array<[string, string]> = [];
   private raf = 0;
@@ -82,6 +88,7 @@ export class GameScreen {
       this.raf = requestAnimationFrame(frame);
       this.panWithKeys();
       if (this.snap) {
+        this.view.placement = this.placing ? { valid: this.validRegions(this.placing), hover: this.hover } : null;
         this.view.draw(this.snap, this.players, this.you, this.selected, this.region, this.box);
         this.view.drawMinimap(this.minimap, this.snap);
       }
@@ -113,6 +120,7 @@ export class GameScreen {
     this.renderPlayers();
     this.renderOffers();
     this.renderPanel();
+    this.renderBuildbar();
   }
 
   onOver(winner: number | null): void {
@@ -154,12 +162,42 @@ export class GameScreen {
         void this.diplomacyAction(b.dataset.act as string, Number(b.dataset.player));
       });
     }
-    // Double-click: all your units standing in that region.
-    on(canvas, 'dblclick', (e: MouseEvent) => {
+    // Build bar and the region panel's cancel buttons: also act on press (redrawn often).
+    on($('#buildbar'), 'pointerdown', (e: PointerEvent) => {
+      const b = (e.target as HTMLElement).closest('[data-kind]') as HTMLElement | null;
+      if (!b) return;
+      e.preventDefault();
+      this.setPlacing(b.dataset.kind as BuildingKind);
+    });
+    on($('#panel'), 'pointerdown', (e: PointerEvent) => {
+      const b = (e.target as HTMLElement).closest('[data-act="unbuild"]') as HTMLElement | null;
+      if (!b) return;
+      e.preventDefault();
+      this.send({ o: 'unbuild', region: Number(b.dataset.region), index: Number(b.dataset.index) });
+    });
+    on(canvas, 'mousemove', (e: MouseEvent) => {
       const [x, y] = pos(e);
-      const ids = this.view.blobAt(x, y);
-      const region = ids !== null && this.mine(ids[0]) ? (this.blob(ids[0]) as BlobRow)[6] : this.view.regionAt(x, y);
-      if (region >= 0) this.selectRegionUnits(region, e.shiftKey);
+      const r = this.view.regionAt(x, y);
+      if (r !== this.hover) {
+        this.hover = r;
+        this.renderBuildbar();
+      }
+    });
+    // Double-click: a stack of yours (or one of its units) selects the whole stack; elsewhere,
+    // all your units standing in that region.
+    on(canvas, 'dblclick', (e: MouseEvent) => {
+      if (this.placing) return;
+      const [x, y] = pos(e);
+      const item = this.view.itemAt(x, y);
+      if (item && this.mine(item.ids[0])) {
+        if (!e.shiftKey) this.selected.clear();
+        for (const id of this.view.groupIds(item.group)) this.selected.add(id);
+        this.view.expanded = null;
+        this.region = -1;
+      } else {
+        const region = this.view.regionAt(x, y);
+        if (region >= 0) this.selectRegionUnits(region, e.shiftKey);
+      }
       this.renderPanel();
     });
     // Minimap: click or drag to move the camera.
@@ -187,7 +225,9 @@ export class GameScreen {
       const [x, y] = pos(e);
       if (Math.hypot(x - down.x, y - down.y) > 5) down.moved = true;
       if (!down.moved) return;
-      if (down.button === 0) this.box = [down.x, down.y, x, y];
+      if (down.button === 0) {
+        if (!this.placing) this.box = [down.x, down.y, x, y];
+      }
       else {
         this.view.pan(e.movementX, e.movementY);
       }
@@ -197,7 +237,10 @@ export class GameScreen {
       const [x, y] = pos(e);
       const d = down;
       down = null;
-      if (d.button === 0) {
+      if (this.placing) {
+        if (d.button === 0 && !d.moved) this.place(x, y, e.shiftKey);
+        else if (d.button === 2 && !d.moved) this.setPlacing(null);
+      } else if (d.button === 0) {
         if (this.box) {
           this.selectBox(this.box, e.shiftKey);
           this.box = null;
@@ -266,7 +309,9 @@ export class GameScreen {
       { passive: false },
     );
     on(canvas, 'touchend', (e: TouchEvent) => {
-      if (touch && !touch.moved && e.touches.length === 0) {
+      if (touch && !touch.moved && e.touches.length === 0 && this.placing) {
+        this.place(touch.x, touch.y, false);
+      } else if (touch && !touch.moved && e.touches.length === 0) {
         const blob = this.view.blobAt(touch.x, touch.y);
         if (blob === null && this.selected.size > 0) void this.order(touch.x, touch.y);
         else this.click(touch.x, touch.y, false);
@@ -293,26 +338,28 @@ export class GameScreen {
   }
 
   private click(x: number, y: number, shift: boolean): void {
-    // A token or a whole stack: clicking selects all of your units in it.
-    const ids = this.view.blobAt(x, y);
-    if (ids !== null) {
-      const b = this.blob(ids[0]);
-      if (b && this.mine(ids[0])) {
-        if (shift) {
-          const all = ids.every((id) => this.selected.has(id));
-          for (const id of ids) {
-            if (all) this.selected.delete(id);
-            else this.selected.add(id);
-          }
-        } else this.selected = new Set(ids);
-        this.region = b[8] > 0 ? -1 : b[6];
-        return;
-      }
-      if (b) {
-        this.selected.clear();
+    const item = this.view.itemAt(x, y);
+    // Anywhere but the expanded stack's own tokens closes it.
+    if (item?.group !== this.view.expanded || item?.stack) this.view.expanded = null;
+    const b = item ? this.blob(item.ids[0]) : undefined;
+    if (item && b) {
+      // A stack (anyone's) opens up into its units; the selection stays as it is.
+      if (item.stack) {
+        this.view.expanded = item.group;
         this.region = b[6];
         return;
       }
+      // One of your units: select it (Shift adds or removes it).
+      if (this.mine(b[0])) {
+        if (!shift) this.selected = new Set([b[0]]);
+        else if (this.selected.has(b[0])) this.selected.delete(b[0]);
+        else this.selected.add(b[0]);
+        this.region = b[8] > 0 ? -1 : b[6];
+        return;
+      }
+      // Someone else's: show where it is.
+      this.region = b[6];
+      return;
     }
     if (!shift) this.selected.clear();
     this.region = this.view.regionAt(x, y);
@@ -392,7 +439,9 @@ export class GameScreen {
   private key(e: KeyboardEvent): void {
     const k = e.key.toLowerCase();
     const sel = [...this.selected];
-    if (k === 'escape') {
+    if (k === 'escape' && this.placing) {
+      this.setPlacing(null);
+    } else if (k === 'escape') {
       this.selected.clear();
       this.region = -1;
     } else if (k === 'x' && sel.length) {
@@ -406,14 +455,117 @@ export class GameScreen {
     } else if (k === ' ') {
       e.preventDefault();
       this.centreOnCapital();
-    } else if (['1', '2', '3', '4'].includes(k) && this.region >= 0) {
-      this.send({ o: 'build', region: this.region, kind: BUILDING_INDEX[Number(k) - 1] });
+    } else if (['1', '2', '3', '4'].includes(k)) {
+      this.setPlacing(BUILDING_INDEX[Number(k) - 1]);
     } else if (k === 'q' && this.region >= 0) {
       this.send({ o: 'produce', region: this.region, building: 'barracks' });
     } else if (k === 'e' && this.region >= 0) {
       this.send({ o: 'produce', region: this.region, building: 'factory' });
     } else return;
     this.renderPanel();
+  }
+
+  // -- placement mode ---------------------------------------------------------------------------
+
+  /** Enters placement mode for a building, or leaves it (same building again, or null). */
+  private setPlacing(kind: BuildingKind | null): void {
+    this.placing = kind === this.placing ? null : kind;
+    if (this.placing && this.you === null) this.placing = null;
+    this.view.canvas.classList.toggle('placing', this.placing !== null);
+    this.renderBuildbar();
+  }
+
+  /** A click in placement mode: build there (Shift keeps placing). */
+  private place(x: number, y: number, shift: boolean): void {
+    const kind = this.placing;
+    if (!kind) return;
+    const region = this.view.regionAt(x, y);
+    const why = this.whyNot(kind, region);
+    if (why) {
+      toast(why);
+      return;
+    }
+    this.send({ o: 'build', region, kind });
+    if (!shift) this.setPlacing(null);
+  }
+
+  /** Builds waiting in a region (besides the one under way), as building kinds. */
+  private queued(region: number): BuildingKind[] {
+    const row = this.snap?.builds.find((b) => b[0] === region);
+    return row ? row.slice(1).map((i) => BUILDING_INDEX[i]) : [];
+  }
+
+  /** The level the next build of `kind` would reach in a region, counting queued ones. */
+  private nextLevel(kind: BuildingKind, region: number): number {
+    const rr = (this.snap as Snapshot).regions[region];
+    const built = { barracks: rr[3] & 1 ? 1 : 0, factory: rr[3] & 2 ? 1 : 0, fort: rr[1], infra: rr[2] }[kind];
+    const underway = rr[6] >= 0 && BUILDING_INDEX[rr[6]] === kind ? 1 : 0;
+    return built + underway + this.queued(region).filter((k) => k === kind).length + 1;
+  }
+
+  private resources(): Resources {
+    const me = (this.snap as Snapshot).players[this.you as number];
+    return { money: me.res[0], manpower: me.res[1], steel: me.res[2], oil: me.res[3] };
+  }
+
+  /** Why `kind` can't be placed in a region right now, or null if it can (mirrors Sim.build). */
+  private whyNot(kind: BuildingKind, region: number): string | null {
+    const snap = this.snap;
+    if (!snap || this.you === null) return 'you are not playing';
+    if (region < 0) return 'pick one of your regions';
+    const rr = snap.regions[region];
+    if (rr[0] !== this.you) return 'not your region';
+    if (!(rr[3] & 4)) return 'region is out of supply';
+    if (!canBuildOn(kind, this.map.regions[region].traits)) return 'a factory needs a city or industry region';
+    const level = this.nextLevel(kind, region);
+    if (level > MAX_LEVEL[kind]) return `${BUILD_LABEL[kind]} is at its highest level`;
+    if (rr[6] >= 0 && this.queued(region).length >= BUILD_QUEUE) return 'build queue is full';
+    if (!afford(this.resources(), buildCost(kind, level).cost)) return 'not enough resources';
+    return null;
+  }
+
+  private validRegions(kind: BuildingKind): Set<number> {
+    const out = new Set<number>();
+    const regions = this.snap?.regions ?? [];
+    for (let i = 0; i < regions.length; i++) if (regions[i][0] === this.you && !this.whyNot(kind, i)) out.add(i);
+    return out;
+  }
+
+  /** The build bar: a button per building with its cost, exact for the region under the cursor. */
+  private renderBuildbar(): void {
+    const bar = $('#buildbar');
+    const snap = this.snap;
+    bar.classList.toggle('hidden', !snap || this.you === null || !snap.players[this.you]?.alive);
+    if (!snap || this.you === null || !snap.players[this.you]?.alive) return;
+    const res = this.resources();
+    const mine = this.hover >= 0 && snap.regions[this.hover][0] === this.you ? this.hover : -1;
+    const cells = BUILD_LABEL_KEYS.map((kind, i) => {
+      const level = mine >= 0 ? this.nextLevel(kind, mine) : 1;
+      const maxed = level > MAX_LEVEL[kind];
+      const allowed = mine < 0 || canBuildOn(kind, this.map.regions[mine].traits);
+      const { cost, seconds } = buildCost(kind, Math.min(level, MAX_LEVEL[kind]));
+      const name = `${BUILD_LABEL[kind]}${MAX_LEVEL[kind] > 1 && mine >= 0 && !maxed ? ` ${level}` : ''}`;
+      const price = maxed ? 'MAX' : !allowed ? 'city / industry only' : `${costText(cost)} · ${seconds}s`;
+      const poor = !maxed && allowed && !afford(res, cost);
+      return { kind, i, name, price, poor, key: `${name}|${price}|${poor}` };
+    });
+    const key = `${this.placing}|${cells.map((c) => c.key).join('/')}`;
+    if (key === this.buildbarKey) return;
+    this.buildbarKey = key;
+    bar.replaceChildren(
+      classbar('Build', this.placing ? 'click a region · shift: more · esc' : '1-4'),
+      el(
+        'div',
+        { class: 'slots' },
+        cells.map((c) =>
+          el('button', { class: `slot${this.placing === c.kind ? ' active' : ''}${c.poor ? ' poor' : ''}`, 'data-kind': c.kind }, [
+            el('img', { src: buildingIcon(c.kind), alt: '' }),
+            el('span', { class: 'name' }, [el('b', {}, [String(c.i + 1)]), ` ${c.name}`]),
+            el('span', { class: 'price' }, [c.price]),
+          ]),
+        ),
+      ),
+    );
   }
 
   /** Selects all your units standing in a region (Shift adds to the selection). */
@@ -645,26 +797,22 @@ export class GameScreen {
       const me = snap.players[this.you];
       const res: Resources = { money: me.res[0], manpower: me.res[1], steel: me.res[2], oil: me.res[3] };
       const building = rr[6] >= 0 ? BUILDING_INDEX[rr[6]] : null;
-      out.push(el('div', { class: 'line' }, [building ? `Building: ${BUILD_LABEL[building]}` : 'Build']));
-      if (building) out.push(cellBar(rr[7]));
-      const levels: Record<BuildingKind, number> = { barracks: rr[3] & 1 ? 1 : 0, factory: rr[3] & 2 ? 1 : 0, fort: rr[1], infra: rr[2] };
-      out.push(
-        el(
-          'div',
-          { class: 'buttons' },
-          BUILD_LABEL_KEYS.map((kind, i) => {
-            const level = levels[kind] + 1;
-            const maxed = level > MAX_LEVEL[kind];
-            const allowed = canBuildOn(kind, region.traits);
-            const { cost, seconds } = buildCost(kind, Math.min(level, MAX_LEVEL[kind]));
-            const label = maxed ? `${BUILD_LABEL[kind]} ✓` : `${i + 1} ${BUILD_LABEL[kind]}${MAX_LEVEL[kind] > 1 ? ` ${level}` : ''}`;
-            const b = el('button', { title: allowed ? `${costText(cost)} · ${seconds}s` : 'Needs an industry or city region' }, [label]) as HTMLButtonElement;
-            b.disabled = maxed || !allowed || !!building || !afford(res, cost) || !(rr[3] & 4);
-            b.onclick = () => this.send({ o: 'build', region: region.id, kind });
-            return b;
-          }),
-        ),
-      );
+      if (building) {
+        // Under way, then what waits behind it; levels count up per kind.
+        const levels: Record<BuildingKind, number> = { barracks: rr[3] & 1 ? 1 : 0, factory: rr[3] & 2 ? 1 : 0, fort: rr[1], infra: rr[2] };
+        const label = (kind: BuildingKind) => {
+          levels[kind] += 1;
+          return `${BUILD_LABEL[kind]}${MAX_LEVEL[kind] > 1 ? ` ${levels[kind]}` : ''}`;
+        };
+        const cancel = (index: number) =>
+          el('button', { class: 'x', 'data-act': 'unbuild', 'data-region': String(region.id), 'data-index': String(index), title: 'Cancel (full refund)' }, ['✕']);
+        out.push(el('div', { class: 'line build' }, [el('span', {}, [`Building: ${label(building)}`]), cancel(0)]), cellBar(rr[7]));
+        this.queued(region.id).forEach((kind, i) => {
+          out.push(el('div', { class: 'line build queued' }, [el('span', {}, [`Next: ${label(kind)}`]), cancel(i + 1)]));
+        });
+      } else {
+        out.push(el('div', { class: 'sub' }, ['Build: pick a building in the build bar (1-4), then click here']));
+      }
       for (const line of snap.production.filter((p) => p.region === region.id)) out.push(...this.productionLine(line, res));
     }
 
@@ -708,6 +856,16 @@ function clock(t: number): string {
 
 function afford(res: Resources, cost: Resources): boolean {
   return RESOURCES.every((k) => res[k] >= cost[k]);
+}
+
+const buildingIcons = new Map<BuildingKind, string>();
+function buildingIcon(kind: BuildingKind): string {
+  let url = buildingIcons.get(kind);
+  if (!url) {
+    url = spriteUrl(ICONS[kind], 2);
+    buildingIcons.set(kind, url);
+  }
+  return url;
 }
 
 function costText(cost: Resources): string {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  buildCost,
   CROSS_SECONDS,
   CUT_OFF_SECONDS,
   DRILL_CAP,
@@ -309,11 +310,64 @@ describe('economy', () => {
     rich(s);
     assert.match(s.build(0, 1, 'factory') ?? '', /can't build/);
     assert.equal(s.build(0, 1, 'fort'), null);
-    assert.match(s.build(0, 1, 'infra') ?? '', /already building/);
     run(s, 19);
     assert.equal(s.state.regions[1].fort, 0);
     run(s, 2);
     assert.equal(s.state.regions[1].fort, 1);
+  });
+
+  it('queues builds behind the one under way, paid up front, levels counting up', () => {
+    const s = duel();
+    rich(s);
+    const p = s.state.players[0];
+    const rs = s.state.regions[1];
+    const money = p.resources.money;
+    assert.equal(s.build(0, 1, 'fort'), null);
+    assert.equal(s.build(0, 1, 'fort'), null);
+    assert.equal(s.build(0, 1, 'fort'), null);
+    assert.deepEqual([rs.construction?.level, ...rs.buildQueue.map((c) => c.level)], [1, 2, 3]);
+    const paid = [1, 2, 3].reduce((sum, l) => sum + buildCost('fort', l).cost.money, 0);
+    assert.equal(money - p.resources.money, paid);
+    assert.match(s.build(0, 1, 'fort') ?? '', /highest level/);
+    assert.equal(s.build(0, 1, 'infra'), null);
+    assert.match(s.build(0, 1, 'infra') ?? '', /queue is full/);
+    run(s, buildCost('fort', 1).seconds + 0.5);
+    assert.equal(rs.fort, 1);
+    assert.equal(rs.construction?.level, 2);
+    assert.equal(rs.buildQueue.length, 2);
+  });
+
+  it('cancelling a build refunds it and the later levels it led to, then starts the next', () => {
+    const s = duel();
+    rich(s);
+    const p = s.state.players[0];
+    const rs = s.state.regions[1];
+    s.build(0, 1, 'fort');
+    s.build(0, 1, 'infra');
+    s.build(0, 1, 'fort');
+    run(s, 5);
+    const money = p.resources.money;
+    assert.equal(s.unbuild(0, 1, 0), null);
+    assert.equal(p.resources.money - money, buildCost('fort', 1).cost.money + buildCost('fort', 2).cost.money);
+    assert.equal(rs.construction?.kind, 'infra');
+    assert.equal(rs.construction?.progress, 0);
+    assert.equal(rs.buildQueue.length, 0);
+    assert.match(s.unbuild(0, 1, 1) ?? '', /nothing to cancel/);
+    assert.match(s.unbuild(1, 1, 0) ?? '', /not your region/);
+  });
+
+  it('a captured region loses its builds', () => {
+    const s = duel();
+    rich(s);
+    s.build(0, 1, 'fort');
+    s.build(0, 1, 'infra');
+    s.declareWar(1, 0);
+    clearBlobs(s);
+    place(s, 1, 'infantry', 1);
+    run(s, 30);
+    assert.equal(s.state.regions[1].owner, 1);
+    assert.equal(s.state.regions[1].construction, null);
+    assert.deepEqual(s.state.regions[1].buildQueue, []);
   });
 
   it('produces queued blobs, with repeat', () => {

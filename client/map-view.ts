@@ -18,6 +18,10 @@ interface Placed {
   x: number;
   y: number;
   r: number;
+  /** The stack this belongs to ('s:…' or 't:…'), also for its single tokens. */
+  group: string;
+  /** Drawn as a stack of several units (a click expands it). */
+  stack: boolean;
 }
 
 /** One token or stack to draw this frame. */
@@ -29,6 +33,10 @@ interface Item {
   owner: number;
   /** On the move (travelling to the next region or passing through). */
   moving: boolean;
+  /** The stack key these units belong to. */
+  group: string;
+  /** Part of the expanded stack: never merged or pushed, drawn on top. */
+  pinned?: boolean;
   /** Position in map coordinates. */
   tx: number;
   ty: number;
@@ -53,6 +61,12 @@ export class MapView {
   private supplyKey = '';
   private supply: SupplyInfo | null = null;
   private placed: Placed[] = [];
+  /** The stack shown as single tokens after a click on it, or null. */
+  expanded: string | null = null;
+  /** Placement mode: where the building can go, and the region under the cursor. */
+  placement: { valid: Set<number>; hover: number } | null = null;
+  private readonly placeLayer: HTMLCanvasElement;
+  private placeKey = '';
 
   constructor(canvas: HTMLCanvasElement, map: GameMap, terrain: HTMLImageElement) {
     this.canvas = canvas;
@@ -63,6 +77,7 @@ export class MapView {
     this.territory = offscreen(map.width, map.height);
     this.highlight = offscreen(map.width, map.height);
     this.supplyLayer = offscreen(map.width, map.height);
+    this.placeLayer = offscreen(map.width, map.height);
     // Border pixels never change; only who owns each side does.
     const W = map.width;
     const edges: number[] = [];
@@ -167,8 +182,22 @@ export class MapView {
   }
 
   /** Every drawn token or stack: its units and screen position (for tests). */
-  drawnItems(): Array<{ ids: number[]; x: number; y: number }> {
-    return this.placed.map((p) => ({ ids: p.ids, x: p.x, y: p.y }));
+  drawnItems(): Array<{ ids: number[]; x: number; y: number; group: string; stack: boolean }> {
+    return this.placed.map((p) => ({ ids: p.ids, x: p.x, y: p.y, group: p.group, stack: p.stack }));
+  }
+
+  /** The token or stack under a screen point, or null. */
+  itemAt(sx: number, sy: number): { ids: number[]; group: string; stack: boolean } | null {
+    for (let i = this.placed.length - 1; i >= 0; i--) {
+      const p = this.placed[i];
+      if ((p.x - sx) ** 2 + (p.y - sy) ** 2 <= (p.r + 2) ** 2) return p;
+    }
+    return null;
+  }
+
+  /** Every unit drawn under a stack key this frame (its stack, or its expanded tokens). */
+  groupIds(group: string): number[] {
+    return this.placed.filter((p) => p.group === group).flatMap((p) => p.ids);
   }
 
   // -- state --------------------------------------------------------------------------------
@@ -290,6 +319,32 @@ export class MapView {
     ctx.putImageData(img, 0, 0);
   }
 
+  /** Placement: valid regions tinted green, everything else dimmed. */
+  private updatePlaceLayer(valid: Set<number>): void {
+    const key = [...valid].sort((a, b) => a - b).join(',');
+    if (key === this.placeKey) return;
+    this.placeKey = key;
+    const W = this.map.width;
+    const ctx = this.placeLayer.getContext('2d') as CanvasRenderingContext2D;
+    const img = ctx.createImageData(W, this.map.height);
+    const d = img.data;
+    for (let i = 0; i < this.grid.length; i++) {
+      const o = i * 4;
+      if (valid.has(this.grid[i])) {
+        d[o] = 70;
+        d[o + 1] = 220;
+        d[o + 2] = 100;
+        d[o + 3] = 120;
+      } else {
+        d[o] = 8;
+        d[o + 1] = 11;
+        d[o + 2] = 14;
+        d[o + 3] = 140;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
   private updateHighlight(region: number): void {
     if (region === this.highlighted) return;
     this.highlighted = region;
@@ -333,7 +388,9 @@ export class MapView {
     const h = this.canvas.clientHeight;
     this.clampCamera(w, h);
     this.updateTerritory(snap.regions, players);
-    this.updateHighlight(selectedRegion);
+    const place = this.placement;
+    const lit = place ? (place.valid.has(place.hover) ? place.hover : -1) : selectedRegion;
+    this.updateHighlight(lit);
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.imageSmoothingEnabled = false;
@@ -351,7 +408,11 @@ export class MapView {
     ctx.drawImage(this.territory, 0, 0);
     ctx.globalAlpha = 1;
     if (showSupply) ctx.drawImage(this.supplyLayer, 0, 0);
-    if (selectedRegion >= 0) ctx.drawImage(this.highlight, 0, 0);
+    if (place) {
+      this.updatePlaceLayer(place.valid);
+      ctx.drawImage(this.placeLayer, 0, 0);
+    }
+    if (lit >= 0) ctx.drawImage(this.highlight, 0, 0);
     ctx.restore();
     this.drawGrid(w, h);
 
@@ -497,18 +558,20 @@ export class MapView {
       const owners = [...byOwner.keys()].sort((a, b) => (a === you ? -1 : b === you ? 1 : a - b));
       const fits = list.length * step + (owners.length - 1) * sideGap <= Math.sqrt(reg.area) * scale * 0.9;
       const single = px >= 2 && fits;
-      const slots: Array<{ key: string; rows: BlobRow[]; owner: number; moving: boolean }> = [];
+      const slots: Array<{ key: string; rows: BlobRow[]; owner: number; moving: boolean; group: string; pinned?: boolean }> = [];
       for (const o of owners) {
         const rows = byOwner.get(o) as BlobRow[];
+        const groups: Array<[string, BlobRow[], boolean]> = [];
         const parked = rows.filter((b) => !transit(b));
+        if (parked.length) groups.push([`s:${o}:${region}`, parked, false]);
         const going = new Map<number, BlobRow[]>();
         for (const b of rows) if (transit(b)) going.set(b[7], [...(going.get(b[7]) ?? []), b]);
-        if (single) {
-          for (const b of parked) slots.push({ key: `b:${b[0]}`, rows: [b], owner: o, moving: false });
-          for (const g of going.values()) for (const b of g) slots.push({ key: `b:${b[0]}`, rows: [b], owner: o, moving: true });
-        } else {
-          if (parked.length) slots.push({ key: `s:${o}:${region}`, rows: parked, owner: o, moving: false });
-          for (const [next, g] of going) slots.push({ key: `t:${o}:${region}:${next}`, rows: g, owner: o, moving: true });
+        for (const [next, g] of going) groups.push([`t:${o}:${region}:${next}`, g, true]);
+        for (const [group, g, moving] of groups) {
+          const pinned = group === this.expanded;
+          if (single || pinned || g.length === 1) {
+            for (const b of g) slots.push({ key: `b:${b[0]}`, rows: [b], owner: o, moving, group, pinned });
+          } else slots.push({ key: group, rows: g, owner: o, moving, group });
         }
       }
       const width = slots.length * step + (owners.length - 1) * sideGap;
@@ -527,6 +590,9 @@ export class MapView {
     }
 
     this.declutter(items, step, FRAME_H * px + 4 * px + plateHeight(px));
+    if (this.expanded !== null && !items.some((it) => it.group === this.expanded)) this.expanded = null;
+    // The expanded stack goes on top.
+    items.sort((a, b) => Number(a.pinned ?? false) - Number(b.pinned ?? false));
 
     // Routes (yours) and next-hop arrows (everyone else's), under the tokens.
     const routes = new Map(snap.routes.map((r) => [r[0], r.slice(1)]));
@@ -584,7 +650,7 @@ export class MapView {
     const r = (FRAME_W * px) / 2;
     for (const it of items) {
       const [x, y] = this.toScreen(it.tx, it.ty);
-      const p = { ids: it.rows.map((b) => b[0]), x: Math.round(x), y: Math.round(y), r };
+      const p = { ids: it.rows.map((b) => b[0]), x: Math.round(x), y: Math.round(y), r, group: it.group, stack: it.rows.length > 1 };
       this.drawItem(it, p, players, it.rows.some((b) => selected.has(b[0])), px);
       placed.push(p);
     }
@@ -609,7 +675,7 @@ export class MapView {
     const gone = new Set<Item>();
     for (const it of onScreen) {
       const host = kept.find(
-        (k) => k.owner === it.owner && k.moving === it.moving && Math.abs(k.tx - it.tx) * scale < w * 0.9 && Math.abs(k.ty - it.ty) * scale < h * 0.9,
+        (k) => !k.pinned && !it.pinned && k.owner === it.owner && k.moving === it.moving && Math.abs(k.tx - it.tx) * scale < w * 0.9 && Math.abs(k.ty - it.ty) * scale < h * 0.9,
       );
       if (host) {
         host.rows = [...host.rows, ...it.rows].sort((a, b) => b[3] - a[3]);
@@ -625,6 +691,7 @@ export class MapView {
         for (let j = i + 1; j < kept.length; j++) {
           const a = kept[i];
           const b = kept[j];
+          if (a.pinned && b.pinned) continue;
           const dx = (b.tx - a.tx) * scale;
           const dy = (b.ty - a.ty) * scale;
           const ox = w - Math.abs(dx);
@@ -632,7 +699,8 @@ export class MapView {
           if (ox <= 0 || oy <= 0) continue;
           moved = true;
           // Push along the axis that needs the shorter move; standing items move less.
-          const share = a.moving === b.moving ? 0.5 : a.moving ? 1 : 0;
+          // The expanded stack's tokens never move.
+          const share = a.pinned ? 0 : b.pinned ? 1 : a.moving === b.moving ? 0.5 : a.moving ? 1 : 0;
           if (ox / w <= oy / h) {
             const s = (dx >= 0 ? 1 : -1) * (ox / scale);
             a.tx -= s * share;

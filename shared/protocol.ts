@@ -18,6 +18,8 @@ export type Order =
   | { o: 'produce'; region: number; building: ProductionBuilding }
   | { o: 'repeat'; region: number; building: ProductionBuilding; on: boolean }
   | { o: 'cancel'; region: number; building: ProductionBuilding }
+  /** Cancel a build (0: the one under way, 1+: waiting) and later ones of the same kind. */
+  | { o: 'unbuild'; region: number; index: number }
   /** Declare war on a country. */
   | { o: 'war'; player: number }
   /** Offer peace to a country, or accept its offer. */
@@ -120,6 +122,8 @@ export interface Snapshot {
   production: ProductionView[];
   /** The receiving player's moving units: [blob id, ...remaining regions]. */
   routes: number[][];
+  /** The receiving player's waiting builds: [region, building index...]. */
+  builds: number[][];
   events: GameEvent[];
   /** Pairs of countries at war. */
   wars: Array<[number, number]>;

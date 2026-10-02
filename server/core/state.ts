@@ -46,6 +46,8 @@ export interface Construction {
   level: number;
   progress: number;
   seconds: number;
+  /** What was paid, refunded in full if cancelled. */
+  cost: Resources;
 }
 
 export interface RegionState {
@@ -56,6 +58,8 @@ export interface RegionState {
   factory: boolean;
   production: Record<ProductionBuilding, ProductionLine>;
   construction: Construction | null;
+  /** Builds waiting behind the one under way (paid for already). */
+  buildQueue: Construction[];
   capture: { by: number; progress: number } | null;
   /** In supply for its owner (set by the supply pass). */
   supplied: boolean;
@@ -129,6 +133,7 @@ export function emptyRegion(): RegionState {
     factory: false,
     production: { barracks: emptyLine(), factory: emptyLine() },
     construction: null,
+    buildQueue: [],
     capture: null,
     supplied: false,
     cutOff: 0,

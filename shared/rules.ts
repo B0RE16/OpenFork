@@ -174,6 +174,8 @@ export type ProductionBuilding = 'barracks' | 'factory';
 export type BuildingKind = ProductionBuilding | 'fort' | 'infra';
 export const BUILDING_KINDS: readonly BuildingKind[] = ['barracks', 'factory', 'fort', 'infra'];
 export const MAX_LEVEL: Record<BuildingKind, number> = { barracks: 1, factory: 1, fort: 3, infra: 3 };
+/** Builds a region can have waiting behind the one under way. */
+export const BUILD_QUEUE = 3;
 
 /** Cost and build time of reaching `level` (1-based). */
 export function buildCost(kind: BuildingKind, level: number): { cost: Resources; seconds: number } {

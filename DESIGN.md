@@ -50,6 +50,12 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
     on.
   - You pick what and where, pay, and it **builds over time in the background**. No builder
     units.
+  - **Placement mode:** pick a building in the build bar (or 1–4), then click one of your
+    regions; Shift places more. Valid regions light up green, and the bar shows the exact cost
+    of the next level in the region under the cursor.
+  - **Build queue:** a busy region queues up to 3 more builds behind the one under way. Each
+    is paid when placed and can be cancelled for a full refund (cancelling a level also
+    cancels the higher levels queued after it). A captured region's queue is lost.
   - A captured region's buildings go **intact to the captor**.
 
 ## 4. Units (blobs)

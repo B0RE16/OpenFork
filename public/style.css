@@ -708,6 +708,101 @@ button.primary:hover:not(:disabled) {
   padding: 0 4px;
 }
 
+/* Build bar: placement mode. */
+.buildbar {
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  padding: 0 0 6px;
+}
+
+.buildbar .classbar {
+  margin: 0 0 6px;
+}
+
+.buildbar .slots {
+  display: flex;
+  gap: 6px;
+  padding: 0 8px;
+}
+
+.buildbar .slot {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  align-items: center;
+  text-align: left;
+  padding: 4px 10px 4px 6px;
+  min-width: 150px;
+  font-size: 13px;
+}
+
+.buildbar .slot img {
+  grid-row: span 2;
+  width: 26px;
+  image-rendering: pixelated;
+}
+
+.buildbar .slot .name b {
+  color: var(--accent);
+  font-weight: 400;
+}
+
+.buildbar .slot:hover:not(:disabled) .name b {
+  color: var(--ink);
+}
+
+.buildbar .slot .price {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.buildbar .slot:hover:not(:disabled) .price {
+  color: var(--ink);
+}
+
+.buildbar .slot.poor .price {
+  color: var(--warn);
+}
+
+.buildbar .slot.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow:
+    0 -2px 0 0 var(--accent),
+    0 2px 0 0 var(--accent),
+    -2px 0 0 0 var(--accent),
+    2px 0 0 0 var(--accent);
+}
+
+.buildbar .slot.active .price,
+.buildbar .slot.active .name b {
+  color: var(--accent-ink);
+}
+
+#map.placing {
+  cursor: crosshair;
+}
+
+.panel .line.build {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.panel .line.build.queued {
+  color: var(--muted);
+}
+
+.panel button.x {
+  padding: 0 6px;
+  font-size: 12px;
+  margin: 2px 0;
+}
+
 @media (max-width: 900px) {
   .help {
     display: none;
@@ -720,6 +815,16 @@ button.primary:hover:not(:disabled) {
   }
   .feed,
   .minimap {
+    display: none;
+  }
+  .buildbar {
+    top: 10px;
+    bottom: auto;
+  }
+  .buildbar .slot {
+    min-width: 0;
+  }
+  .buildbar .slot .price {
     display: none;
   }
 }
