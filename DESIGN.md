@@ -22,11 +22,12 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 
 ## 2. Map
 - v1 map: **Europe, modern countries, mainland only, Atlantic to the Urals** (no UK, Ireland,
-  Iceland or islands until naval exists). About 100–150 land regions built from **real
-  provinces**, with admin borders merged or split to that count.
+  Iceland or islands until naval exists). About 300 land regions built from **real provinces**, with admin borders merged or split to that count (denser in the west, coarser in Russia).
 - A map has **more start countries than lobby slots**. Humans pick, bots fill up to the lobby
   size, and the other countries start as empty neutral land.
-- **Small start:** capital + 2–3 neighbouring regions, 2–3 infantry blobs, and a barracks in
+- **Spawn spacing:** bots and randomly dealt countries keep their capitals at least 600 km
+  from the ones already taken. Countries people pick themselves aren't restricted.
+- **Small start:** capital + about 4 neighbouring regions, 2–3 infantry blobs, and a barracks in
   the capital. Neutral land is empty.
 - Each region has:
   - **Terrain:** plains, forest, hills or mountains. Borders crossing a **river** give the
@@ -75,7 +76,7 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 ## 5. Movement
 - **RTS controls:** click or box-select blobs, right-click a region to send them, and use keys
   for split, merge and build.
-- **Pathing:** blobs path through any region. Infantry takes about 8 s to cross one plains
+- **Pathing:** blobs path through any region. Infantry takes about 5.5 s to cross one plains
   region; terrain changes that, and infrastructure makes it faster.
 - **Zone of control:** crossing enemy-owned land is slower than crossing your own, and forts
   there slow it more. A fort without units in it only slows; it can't stop anything.
@@ -138,7 +139,7 @@ They also take over for players who disconnect.
 | Server tick | 10/s |
 | Infantry: max strength / speed / attack / defense | 20 / 1.0 / 1.0 / 1.2 |
 | Tanks: max strength / speed / attack / defense | 10 / 1.8 / 2.5 / 1.5 |
-| Crossing one plains region (speed 1.0) | 8 s |
+| Crossing one plains region (speed 1.0) | 5.5 s |
 | Terrain move ×: plains / forest / hills / mountains | 1 / 0.7 / 0.6 / 0.4 |
 | Tank attack ×: plains / forest / hills / mountains | 1.2 / 0.6 / 0.7 / 0.4 |
 | Enemy-land move × / per fort level | 0.7 / −0.1 |
@@ -148,6 +149,8 @@ They also take over for players who disconnect.
 | Training range / drill rate / cap from drill | 0–100 / +1 per 6 s / 50 (combat can go to 100) |
 | Training effect at 100 | ×1.5 damage dealt, ×0.67 damage taken |
 | Merge penalty | −10 training |
-| Capture time, empty plains, medium size | 6 s (× terrain/size/fort, ÷ training) |
+| Capture time, empty plains, medium size | 4 s (× terrain/size/fort, ÷ training) |
+| Supply reach from a hub | 6 regions |
+| Base yield per region (money / manpower) | 0.25 / 0.15 per s |
 | Stack cap | 2–4 tokens by size/terrain, +1 per infrastructure level (max 3) |
 | Retreat cost | −15% strength, −10 training |

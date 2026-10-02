@@ -39,6 +39,7 @@ export class GameScreen {
   private readonly cleanup: Array<() => void> = [];
   private centred = false;
   finished = false;
+  private readonly minimap: HTMLCanvasElement;
 
   constructor(net: Net, map: GameMap, terrain: HTMLImageElement, you: number | null, players: GamePlayer[], onBack: () => void) {
     this.net = net;
@@ -47,6 +48,10 @@ export class GameScreen {
     this.players = players;
     this.onBack = onBack;
     this.view = new MapView($('#map') as HTMLCanvasElement, map, terrain);
+    this.minimap = $('#minimap') as HTMLCanvasElement;
+    this.minimap.width = 240;
+    this.minimap.height = Math.round((240 * map.height) / map.width);
+    this.setOverlay(false);
     $('#over').classList.add('hidden');
     $('#panel').classList.add('hidden');
     $('#feed').replaceChildren();
@@ -70,7 +75,10 @@ export class GameScreen {
     const frame = () => {
       this.raf = requestAnimationFrame(frame);
       this.panWithKeys();
-      if (this.snap) this.view.draw(this.snap, this.players, this.you, this.selected, this.region, this.box);
+      if (this.snap) {
+        this.view.draw(this.snap, this.players, this.you, this.selected, this.region, this.box);
+        this.view.drawMinimap(this.minimap, this.snap);
+      }
     };
     frame();
   }
@@ -131,6 +139,30 @@ export class GameScreen {
     };
 
     on(canvas, 'contextmenu', (e: MouseEvent) => e.preventDefault());
+    // Double-click: all your units standing in that region.
+    on(canvas, 'dblclick', (e: MouseEvent) => {
+      const [x, y] = pos(e);
+      const id = this.view.blobAt(x, y);
+      const region = id !== null && this.mine(id) ? (this.blob(id) as BlobRow)[6] : this.view.regionAt(x, y);
+      if (region >= 0) this.selectRegionUnits(region, e.shiftKey);
+      this.renderPanel();
+    });
+    // Minimap: click or drag to move the camera.
+    let miniDown = false;
+    const miniJump = (e: MouseEvent) => {
+      const r = this.minimap.getBoundingClientRect();
+      this.view.focusMinimap(this.minimap, e.clientX - r.left, e.clientY - r.top);
+    };
+    on(this.minimap, 'mousedown', (e: MouseEvent) => {
+      miniDown = true;
+      miniJump(e);
+    });
+    on(window, 'mousemove', (e: MouseEvent) => {
+      if (miniDown) miniJump(e);
+    });
+    on(window, 'mouseup', () => {
+      miniDown = false;
+    });
     on(canvas, 'mousedown', (e: MouseEvent) => {
       const [x, y] = pos(e);
       down = { x, y, button: e.button, moved: false };
@@ -292,6 +324,8 @@ export class GameScreen {
       this.mergeSelected();
     } else if (k === 'h' && sel.length) {
       this.send({ o: 'stop', blobs: sel });
+    } else if (k === 'v') {
+      this.setOverlay(!this.view.overlay);
     } else if (k === ' ') {
       e.preventDefault();
       this.centreOnCapital();
@@ -303,6 +337,21 @@ export class GameScreen {
       this.send({ o: 'produce', region: this.region, building: 'factory' });
     } else return;
     this.renderPanel();
+  }
+
+  /** Selects all your units standing in a region (Shift adds to the selection). */
+  private selectRegionUnits(region: number, add: boolean): void {
+    if (!add) this.selected.clear();
+    for (const b of this.snap?.blobs ?? []) {
+      if (b[1] === this.you && b[6] === region && b[8] === 0) this.selected.add(b[0]);
+    }
+    if (this.selected.size) this.region = -1;
+  }
+
+  private setOverlay(on: boolean): void {
+    this.view.overlay = on && this.you !== null;
+    $('#legend').classList.toggle('hidden', !this.view.overlay);
+    this.renderTopbar();
   }
 
   /** Merges selected units of the same type that stand in the same region. */
@@ -346,6 +395,9 @@ export class GameScreen {
     });
     if (p.broke) parts.push(el('span', { class: 'broke' }, ['BROKE: UNITS WITHERING']));
     if (!p.alive) parts.push(el('span', { class: 'broke' }, ['ELIMINATED // OBSERVING']));
+    const supply = el('button', { class: `toggle${this.view.overlay ? ' on' : ''}`, title: 'Supply overlay (V)' }, ['Supply']);
+    supply.onclick = () => this.setOverlay(!this.view.overlay);
+    parts.push(supply);
     parts.push(el('span', { class: 'clock' }, [t]));
     $('#topbar').replaceChildren(...parts);
   }

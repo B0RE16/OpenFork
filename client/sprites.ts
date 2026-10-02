@@ -185,6 +185,20 @@ export const ICONS = {
     'OOOOOOOOO',
   ]),
   infra: art(['.O..O..O.', 'OGOOGOOGO', '.O..O..O.', '.O..O..O.', 'OGOOGOOGO', '.O..O..O.']),
+  crate: art(
+    [
+      'OOOOOOOOO',
+      'OyYYYYYyO',
+      'OYyYYYyYO',
+      'OYYyYyYYO',
+      'OYYYyYYYO',
+      'OYYyYyYYO',
+      'OYyYYYyYO',
+      'OyYYYYYyO',
+      'OOOOOOOOO',
+    ],
+    { Y: '#c19a5b', y: '#6e5230' },
+  ),
   swords: [
     art([
       'W.......W',

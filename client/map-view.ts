@@ -3,7 +3,7 @@
 import { decodeGrid, type GameMap, WATER } from '../shared/map.ts';
 import type { BlobRow, GamePlayer, RegionRow, Snapshot } from '../shared/protocol.ts';
 import { UNIT_INDEX } from '../shared/protocol.ts';
-import { UNITS } from '../shared/rules.ts';
+import { SUPPLY_RANGE, supplyCapacity, UNITS } from '../shared/rules.ts';
 import { blit, blitCentred, FRAME_H, FRAME_W, ICONS, INK, pixelDigits, type Sprite, unitFrame } from './sprites.ts';
 
 export interface Camera {
@@ -34,6 +34,11 @@ export class MapView {
   private ownersKey = '';
   private highlighted = -2;
   cam: Camera = { x: 0, y: 0, scale: 1 };
+  /** Supply overlay on (for the player `you`). */
+  overlay = false;
+  private readonly supplyLayer: HTMLCanvasElement;
+  private supplyKey = '';
+  private supply: SupplyInfo | null = null;
   private placed: Placed[] = [];
   /** Map-space anchor of each blob in the previous and current snapshot, for smooth moves. */
   private prevPos = new Map<number, [number, number]>();
@@ -48,6 +53,7 @@ export class MapView {
     this.grid = decodeGrid(map.grid, map.width * map.height);
     this.territory = offscreen(map.width, map.height);
     this.highlight = offscreen(map.width, map.height);
+    this.supplyLayer = offscreen(map.width, map.height);
     // Border pixels never change; only who owns each side does.
     const W = map.width;
     const edges: number[] = [];
@@ -99,6 +105,16 @@ export class MapView {
     this.cam.scale = Math.min(8, Math.max(0.25, this.cam.scale * factor));
     this.cam.x = mx - sx / this.cam.scale;
     this.cam.y = my - sy / this.cam.scale;
+  }
+
+  /** Keeps the view on the map: no panning off into empty space. */
+  private clampCamera(w: number, h: number): void {
+    const vw = w / this.cam.scale;
+    const vh = h / this.cam.scale;
+    const fit = (pos: number, view: number, size: number) =>
+      view >= size ? (size - view) / 2 : Math.min(size - view, Math.max(0, pos));
+    this.cam.x = fit(this.cam.x, vw, this.map.width);
+    this.cam.y = fit(this.cam.y, vh, this.map.height);
   }
 
   toMap(sx: number, sy: number): [number, number] {
@@ -209,6 +225,67 @@ export class MapView {
     ctx.putImageData(img, 0, 0);
   }
 
+  /** Your supply network, worked out the way the server does (DESIGN.md §7). */
+  private supplyInfo(snap: Snapshot, players: GamePlayer[], you: number): SupplyInfo {
+    const regions = snap.regions;
+    const capital = this.map.countries.find((c) => c.id === players[you]?.country)?.capital ?? -1;
+    const depth = new Map<number, number>();
+    const hubs: number[] = [];
+    const queue: number[] = [];
+    regions.forEach((r, i) => {
+      if (r[0] === you && (i === capital || this.map.regions[i].traits.includes('city'))) {
+        hubs.push(i);
+        depth.set(i, 0);
+        queue.push(i);
+      }
+    });
+    for (let q = 0; q < queue.length; q++) {
+      const u = queue[q];
+      const d = depth.get(u) as number;
+      if (d >= SUPPLY_RANGE) continue;
+      for (const n of this.map.regions[u].neighbors) {
+        if (regions[n.id][0] === you && !depth.has(n.id)) {
+          depth.set(n.id, d + 1);
+          queue.push(n.id);
+        }
+      }
+    }
+    const need = new Map<number, number>();
+    for (const b of snap.blobs) {
+      if (b[1] !== you || b[8] > 0) continue;
+      need.set(b[6], (need.get(b[6]) ?? 0) + b[4] * UNITS[UNIT_INDEX[b[2]]].supplyNeed);
+    }
+    return { depth, hubs, need };
+  }
+
+  private updateSupplyLayer(snap: Snapshot, players: GamePlayer[], you: number): void {
+    const key = `${you}|${snap.regions.map((r) => r[0]).join(',')}`;
+    this.supply = this.supplyInfo(snap, players, you);
+    if (key === this.supplyKey) return;
+    this.supplyKey = key;
+    const W = this.map.width;
+    const ctx = this.supplyLayer.getContext('2d') as CanvasRenderingContext2D;
+    const img = ctx.createImageData(W, this.map.height);
+    const d = img.data;
+    const colorOfRegion = new Map<number, [number, number, number]>();
+    snap.regions.forEach((r, i) => {
+      if (r[0] !== you) return;
+      const depth = this.supply?.depth.get(i);
+      colorOfRegion.set(i, depth === undefined ? [255, 90, 90] : depth >= SUPPLY_RANGE ? [255, 179, 71] : [79, 209, 255]);
+    });
+    for (let i = 0; i < this.grid.length; i++) {
+      const c = colorOfRegion.get(this.grid[i]);
+      if (!c) continue;
+      const x = i % W;
+      if ((x + (i - x) / W) % 2) continue; // dithered
+      d[i * 4] = c[0];
+      d[i * 4 + 1] = c[1];
+      d[i * 4 + 2] = c[2];
+      d[i * 4 + 3] = 150;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+
   private updateHighlight(region: number): void {
     if (region === this.highlighted) return;
     this.highlighted = region;
@@ -250,6 +327,7 @@ export class MapView {
     const dpr = window.devicePixelRatio || 1;
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;
+    this.clampCamera(w, h);
     this.updateTerritory(snap.regions, players);
     this.updateHighlight(selectedRegion);
 
@@ -263,7 +341,12 @@ export class MapView {
     ctx.imageSmoothingEnabled = this.cam.scale < 1;
     ctx.drawImage(this.terrain, 0, 0);
     ctx.imageSmoothingEnabled = false;
+    const showSupply = this.overlay && you !== null;
+    if (showSupply) this.updateSupplyLayer(snap, players, you);
+    ctx.globalAlpha = showSupply ? 0.35 : 1;
     ctx.drawImage(this.territory, 0, 0);
+    ctx.globalAlpha = 1;
+    if (showSupply) ctx.drawImage(this.supplyLayer, 0, 0);
     if (selectedRegion >= 0) ctx.drawImage(this.highlight, 0, 0);
     ctx.restore();
     this.drawGrid(w, h);
@@ -368,6 +451,13 @@ export class MapView {
         pixelText(ctx, region.name.toUpperCase(), x, top - 3 - size / 2, size, '#e6edf2');
       }
 
+      // Supply overlay: a crate on hubs, and how loaded each of your regions is.
+      if (this.overlay && you !== null && rr[0] === you && this.supply) {
+        if (this.supply.hubs.includes(region.id)) blitCentred(ctx, ICONS.crate, x - 12 * ipx, y + tokenTop - 6 * ipx, ipx);
+        const load = (this.supply.need.get(region.id) ?? 0) / supplyCapacity(region, rr[2]);
+        if (load > 0) cells(ctx, x, y + below + 8 * px, Math.min(1, load), load > 1 ? '#ff5a5a' : load > 0.75 ? '#ffb347' : '#7bd389', px);
+      }
+
       // Capture progress: 8 cells in the capturer's colour, under the units.
       if (rr[4] >= 0 && rr[5] > 0) cells(ctx, x, y + below, rr[5], colorOf(players, rr[4]), px);
       // Construction: 8 cells in gold, for your own regions.
@@ -416,6 +506,49 @@ export class MapView {
     const byId = new Map(snap.blobs.map((b) => [b[0], b]));
     for (const p of placed) this.drawToken(byId.get(p.id) as BlobRow, p, players, selected.has(p.id), px);
     this.placed = placed;
+  }
+
+  /** The minimap: the whole map small, your view as a cyan box, battles as red dots. */
+  drawMinimap(mini: HTMLCanvasElement, snap: Snapshot): void {
+    const ctx = mini.getContext('2d') as CanvasRenderingContext2D;
+    const w = mini.width;
+    const h = mini.height;
+    const k = w / this.map.width;
+    ctx.imageSmoothingEnabled = true;
+    ctx.fillStyle = '#101418';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(this.terrain, 0, 0, w, h);
+    ctx.drawImage(this.territory, 0, 0, w, h);
+    // Battles.
+    if (Math.floor(performance.now() / 400) % 2 === 0) {
+      const owners = new Map<number, Set<number>>();
+      for (const b of snap.blobs) {
+        if (b[8] > 0) continue;
+        const s = owners.get(b[6]) ?? new Set();
+        s.add(b[1]);
+        owners.set(b[6], s);
+      }
+      ctx.fillStyle = '#ff5a5a';
+      for (const [r, s] of owners) {
+        if (s.size < 2) continue;
+        const reg = this.map.regions[r];
+        ctx.fillRect(Math.round(reg.x * k) - 2, Math.round(reg.y * k) - 2, 4, 4);
+      }
+    }
+    // Your view.
+    const vx = this.cam.x * k;
+    const vy = this.cam.y * k;
+    const vw = (this.canvas.clientWidth / this.cam.scale) * k;
+    const vh = (this.canvas.clientHeight / this.cam.scale) * k;
+    ctx.strokeStyle = '#4fd1ff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(Math.round(vx) + 1, Math.round(vy) + 1, Math.round(vw) - 2, Math.round(vh) - 2);
+  }
+
+  /** Moves the camera so a minimap point is in the middle of the screen. */
+  focusMinimap(mini: HTMLCanvasElement, mx: number, my: number): void {
+    const k = this.map.width / mini.clientWidth;
+    this.focus(mx * k, my * k, this.cam.scale);
   }
 
   /** A NATO symbol: echelon marks, the framed branch symbol, a strength bar and number. */
@@ -500,6 +633,14 @@ export class MapView {
 const PLATE_MIN_W = 22;
 const digitScale = (px: number) => (px >= 2 ? 3 : 2);
 const plateHeight = (px: number) => 5 * digitScale(px) + 5;
+
+export interface SupplyInfo {
+  /** Hops from the nearest hub, for your regions in reach. */
+  depth: Map<number, number>;
+  hubs: number[];
+  /** Supply your units standing in each region need. */
+  need: Map<number, number>;
+}
 
 /** Pixel-font text with a 1px dark outline, at whole pixels. */
 function pixelText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size: number, color: string): void {

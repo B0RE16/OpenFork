@@ -608,7 +608,7 @@ button.primary:hover:not(:disabled) {
 
 .feed {
   right: 10px;
-  bottom: 10px;
+  bottom: 222px;
   width: min(320px, calc(100% - 20px));
   padding: 0 0 6px;
   font-size: 13px;
@@ -623,6 +623,69 @@ button.primary:hover:not(:disabled) {
 .feed time {
   color: var(--accent);
   margin-right: 6px;
+}
+
+.minimap {
+  right: 10px;
+  bottom: 10px;
+  padding: 0;
+  line-height: 0;
+}
+
+.minimap .classbar {
+  line-height: 1.25;
+  margin: 0;
+}
+
+.minimap canvas {
+  display: block;
+  width: 240px;
+  image-rendering: pixelated;
+  cursor: pointer;
+}
+
+.legend {
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 0 6px;
+  font-size: 12px;
+}
+
+.legend div:not(.classbar) {
+  padding: 1px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend .key {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  box-shadow: 0 0 0 2px var(--ink);
+}
+
+.legend .key.in {
+  background: var(--accent);
+}
+
+.legend .key.edge {
+  background: var(--warn);
+}
+
+.legend .key.cut {
+  background: var(--bad);
+}
+
+.topbar .toggle {
+  padding: 2px 8px;
+  font-size: 13px;
+}
+
+.topbar .toggle.on {
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .help {
@@ -655,7 +718,8 @@ button.primary:hover:not(:disabled) {
     left: 10px;
     transform: none;
   }
-  .feed {
+  .feed,
+  .minimap {
     display: none;
   }
 }

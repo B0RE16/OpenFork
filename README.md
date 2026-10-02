@@ -4,7 +4,7 @@ A real-time browser strategy game about fighting over provinces with movable uni
 inspired by OpenFront but written from scratch. Friends play together in a private lobby,
 and bots take the other countries. The rules are in **[DESIGN.md](DESIGN.md)**.
 
-Status: first playable. You can play a land war on mainland Europe (145 regions from real
+Status: first playable. You can play a land war on mainland Europe (319 regions from real
 provinces) with infantry and tanks, forts, entrenchment, supply, production, and
 easy/normal/hard bots. Naval, air, alliances and fog of war come later.
 
@@ -28,12 +28,15 @@ to your friends, pick countries, and start. Bots fill the empty seats.
 | | |
 |---|---|
 | Left click / drag | select a unit or region / box-select your units (Shift adds) |
+| Double-click | all your units standing in that region |
 | Right click | send the selected units to a region (they path there, fighting and capturing on the way) |
 | Right drag, WASD, arrows | pan |
 | Wheel | zoom |
 | X / G / H | split / merge / halt the selected units |
 | 1–4 | build barracks / factory / fort / infrastructure in the selected region |
 | Q / E | queue infantry / tanks at the selected region's barracks / factory |
+| V | supply overlay: hubs, reach, cut-off regions, load per region |
+| Minimap (bottom right) | click or drag to move the view |
 | Space | back to your capital |
 
 On phones: tap a unit, then tap a region to send it; drag to pan, pinch to zoom.
