@@ -1,0 +1,383 @@
+// Sessions, private lobbies and running games. No I/O: the host feeds it connections and
+// messages and calls tick() every TICK_MS (see server/main.ts).
+import type { GameMap } from '../../shared/map.ts';
+import type { ClientMessage, LobbyMember, LobbySettings, LobbyView, ServerMessage } from '../../shared/protocol.ts';
+import { MAX_PLAYERS, MIN_PLAYERS, PLAYER_COLORS, SNAPSHOT_EVERY_TICKS } from '../../shared/rules.ts';
+import { Game, type Seat } from './game.ts';
+import { parseClientMessage } from './parse.ts';
+import type { Auth, Clock, ConnId, Identity, MatchLog, Transport } from './ports.ts';
+import { World } from './world.ts';
+
+/** Lobbies with nobody connected are closed after this long. */
+const EMPTY_LOBBY_MS = 10 * 60_000;
+/** People in one lobby (players and watchers). */
+const MAX_MEMBERS = 16;
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+interface Member {
+  identity: Identity;
+  country: string | null;
+  conns: Set<ConnId>;
+}
+
+interface Lobby {
+  code: string;
+  host: string;
+  members: Map<string, Member>;
+  settings: LobbySettings;
+  game: Game | null;
+  emptySince: number | null;
+  ticks: number;
+}
+
+export interface GameServerDeps {
+  transport: Transport;
+  auth: Auth;
+  clock: Clock;
+  maps: Map<string, GameMap>;
+  random?: () => number;
+  matches?: MatchLog;
+  log?: (msg: string) => void;
+}
+
+export class GameServer {
+  private readonly deps: GameServerDeps;
+  private readonly random: () => number;
+  private readonly worlds = new Map<string, World>();
+  private readonly sessions = new Map<ConnId, { identity: Identity | null }>();
+  /** identity id → lobby code */
+  private readonly memberOf = new Map<string, string>();
+  readonly lobbies = new Map<string, Lobby>();
+
+  constructor(deps: GameServerDeps) {
+    this.deps = deps;
+    this.random = deps.random ?? Math.random;
+    for (const [id, map] of deps.maps) this.worlds.set(id, new World(map));
+  }
+
+  private send(conn: ConnId, msg: ServerMessage): void {
+    this.deps.transport.send(conn, msg);
+  }
+
+  private log(msg: string): void {
+    this.deps.log?.(msg);
+  }
+
+  // -- connections ------------------------------------------------------------------------
+
+  handleConnect(conn: ConnId): void {
+    this.sessions.set(conn, { identity: null });
+  }
+
+  handleDisconnect(conn: ConnId): void {
+    const s = this.sessions.get(conn);
+    this.sessions.delete(conn);
+    const id = s?.identity?.id;
+    if (!id) return;
+    const lobby = this.lobbyOf(id);
+    const m = lobby?.members.get(id);
+    if (!lobby || !m) return;
+    m.conns.delete(conn);
+    if (m.conns.size === 0) {
+      lobby.game?.setConnected(id, false);
+      this.broadcastLobby(lobby);
+    }
+  }
+
+  async handleMessage(conn: ConnId, raw: unknown): Promise<void> {
+    const session = this.sessions.get(conn);
+    if (!session) return;
+    const msg = parseClientMessage(raw);
+    if (!msg) {
+      this.send(conn, { t: 'error', message: 'bad message' });
+      return;
+    }
+    if (msg.t === 'hello') {
+      await this.hello(conn, msg.name, msg.token);
+      return;
+    }
+    const me = session.identity;
+    if (!me) {
+      this.send(conn, { t: 'error', message: 'say hello first' });
+      return;
+    }
+    const error = this.handle(conn, me, msg);
+    if (error) this.send(conn, { t: 'error', message: error });
+  }
+
+  private async hello(conn: ConnId, name: string, token?: string): Promise<void> {
+    const identity = await this.deps.auth.identify({ token, name });
+    const session = this.sessions.get(conn);
+    if (!session) return; // gone while identifying
+    session.identity = identity;
+    this.send(conn, { t: 'welcome', id: identity.id, token: identity.token, name: identity.name });
+    // Back in a lobby they were in.
+    const lobby = this.lobbyOf(identity.id);
+    const m = lobby?.members.get(identity.id);
+    if (lobby && m) {
+      m.identity = identity;
+      m.conns.add(conn);
+      lobby.emptySince = null;
+      lobby.game?.setConnected(identity.id, true);
+      this.broadcastLobby(lobby);
+      if (lobby.game) this.sendGameStart(lobby, conn, identity.id);
+    } else {
+      this.send(conn, { t: 'lobby', lobby: null });
+    }
+  }
+
+  private handle(conn: ConnId, me: Identity, msg: Exclude<ClientMessage, { t: 'hello' }>): string | null {
+    switch (msg.t) {
+      case 'lobby.create': {
+        this.leave(me.id);
+        const code = this.newCode();
+        const lobby: Lobby = {
+          code,
+          host: me.id,
+          members: new Map(),
+          settings: { map: 'europe', size: 6, starting: 'normal', pick: 'free', difficulty: 'normal' },
+          game: null,
+          emptySince: null,
+          ticks: 0,
+        };
+        this.lobbies.set(code, lobby);
+        this.join(lobby, me, conn);
+        this.log(`${me.name} opened lobby ${code}`);
+        return null;
+      }
+      case 'lobby.join': {
+        const lobby = this.lobbies.get(msg.code);
+        if (!lobby) return 'no lobby with that code';
+        if (this.lobbyOf(me.id) === lobby) {
+          lobby.members.get(me.id)?.conns.add(conn);
+          this.broadcastLobby(lobby);
+          if (lobby.game) this.sendGameStart(lobby, conn, me.id);
+          return null;
+        }
+        if (lobby.members.size >= MAX_MEMBERS) return 'lobby is full';
+        this.leave(me.id);
+        this.join(lobby, me, conn);
+        if (lobby.game) this.sendGameStart(lobby, conn, me.id);
+        return null;
+      }
+      case 'lobby.leave':
+        this.leave(me.id);
+        this.send(conn, { t: 'lobby', lobby: null });
+        return null;
+      case 'lobby.settings': {
+        const lobby = this.lobbyOf(me.id);
+        if (!lobby) return 'not in a lobby';
+        if (lobby.host !== me.id) return 'only the host can change settings';
+        if (lobby.game && !lobby.game.over) return 'the game is running';
+        const next = { ...lobby.settings, ...msg.settings };
+        if (!this.worlds.has(next.map)) return 'no such map';
+        lobby.settings = next;
+        this.broadcastLobby(lobby);
+        return null;
+      }
+      case 'lobby.pick': {
+        const lobby = this.lobbyOf(me.id);
+        if (!lobby) return 'not in a lobby';
+        if (lobby.game && !lobby.game.over) return 'the game is running';
+        const member = lobby.members.get(me.id) as Member;
+        if (msg.country !== null) {
+          const c = this.worlds.get(lobby.settings.map)?.map.countries.find((x) => x.id === msg.country);
+          if (!c?.playable) return 'that country can\'t be played';
+          for (const m of lobby.members.values()) if (m !== member && m.country === msg.country) return 'someone else picked it';
+        }
+        member.country = msg.country;
+        this.broadcastLobby(lobby);
+        return null;
+      }
+      case 'lobby.start': {
+        const lobby = this.lobbyOf(me.id);
+        if (!lobby) return 'not in a lobby';
+        if (lobby.host !== me.id) return 'only the host can start';
+        if (lobby.game && !lobby.game.over) return 'already playing';
+        return this.start(lobby);
+      }
+      case 'order': {
+        const lobby = this.lobbyOf(me.id);
+        if (!lobby?.game || lobby.game.over) return 'no game running';
+        return lobby.game.order(me.id, msg.order);
+      }
+    }
+  }
+
+  // -- lobbies ----------------------------------------------------------------------------
+
+  private lobbyOf(identity: string): Lobby | undefined {
+    const code = this.memberOf.get(identity);
+    return code ? this.lobbies.get(code) : undefined;
+  }
+
+  private newCode(): string {
+    for (;;) {
+      let code = '';
+      for (let i = 0; i < 5; i++) code += CODE_CHARS[Math.floor(this.random() * CODE_CHARS.length)];
+      if (!this.lobbies.has(code)) return code;
+    }
+  }
+
+  private join(lobby: Lobby, identity: Identity, conn: ConnId): void {
+    lobby.members.set(identity.id, { identity, country: null, conns: new Set([conn]) });
+    this.memberOf.set(identity.id, lobby.code);
+    lobby.emptySince = null;
+    this.broadcastLobby(lobby);
+  }
+
+  private leave(identity: string): void {
+    const lobby = this.lobbyOf(identity);
+    if (!lobby) return;
+    lobby.members.delete(identity);
+    this.memberOf.delete(identity);
+    lobby.game?.abandon(identity);
+    if (lobby.members.size === 0) {
+      this.lobbies.delete(lobby.code);
+      this.log(`lobby ${lobby.code} closed`);
+      return;
+    }
+    if (lobby.host === identity) lobby.host = [...lobby.members.keys()][0];
+    this.broadcastLobby(lobby);
+  }
+
+  private view(lobby: Lobby): LobbyView {
+    const members: LobbyMember[] = [...lobby.members.values()].map((m) => ({
+      id: m.identity.id,
+      name: m.identity.name,
+      country: m.country,
+      connected: m.conns.size > 0,
+    }));
+    return { code: lobby.code, host: lobby.host, members, settings: lobby.settings, playing: !!lobby.game && !lobby.game.over };
+  }
+
+  private broadcastLobby(lobby: Lobby): void {
+    const view = this.view(lobby);
+    for (const m of lobby.members.values()) for (const c of m.conns) this.send(c, { t: 'lobby', lobby: view });
+  }
+
+  /** Seats humans (their picks, or dealt out), fills the rest with bots, starts the match. */
+  private start(lobby: Lobby): string | null {
+    const world = this.worlds.get(lobby.settings.map);
+    if (!world) return 'no such map';
+    const s = lobby.settings;
+    const size = Math.min(MAX_PLAYERS, Math.max(MIN_PLAYERS, s.size));
+    const playable = world.map.countries.filter((c) => c.playable);
+    const humans = [...lobby.members.values()].filter((m) => m.conns.size > 0).slice(0, size);
+    const taken = new Set<string>();
+    const seats: Seat[] = [];
+    const shuffled = [...playable].sort(() => this.random() - 0.5);
+    for (const m of humans) {
+      let country = s.pick === 'free' ? m.country : null;
+      if (country && taken.has(country)) country = null;
+      country ??= shuffled.find((c) => !taken.has(c.id))?.id ?? null;
+      if (!country) break;
+      taken.add(country);
+      seats.push({ human: m.identity.id, setup: { name: m.identity.name, country, color: '', control: 'human', difficulty: s.difficulty } });
+    }
+    // Bots take the countries farthest from everyone already seated.
+    while (seats.length < size) {
+      const pick = this.farthestCountry(world, playable.filter((c) => !taken.has(c.id)).map((c) => c.id), [...taken]);
+      if (!pick) break;
+      taken.add(pick);
+      const name = playable.find((c) => c.id === pick)?.name ?? pick;
+      seats.push({ human: null, setup: { name: `${name} (bot)`, country: pick, color: '', control: 'bot', difficulty: s.difficulty } });
+    }
+    seats.forEach((seat, i) => (seat.setup.color = PLAYER_COLORS[i % PLAYER_COLORS.length]));
+    lobby.game = new Game(world, seats, s.starting, s.difficulty, Math.floor(this.random() * 2 ** 31), this.deps.clock.now());
+    lobby.ticks = 0;
+    for (const m of lobby.members.values()) {
+      if (m.conns.size === 0) lobby.game.setConnected(m.identity.id, false);
+      for (const c of m.conns) this.sendGameStart(lobby, c, m.identity.id);
+    }
+    this.broadcastLobby(lobby);
+    this.log(`lobby ${lobby.code}: game started (${seats.map((x) => x.setup.country).join(' ')})`);
+    return null;
+  }
+
+  private farthestCountry(world: World, free: string[], taken: string[]): string | null {
+    if (!free.length) return null;
+    const capital = (id: string) => world.map.countries.find((c) => c.id === id)?.capital ?? -1;
+    if (!taken.length) return free[Math.floor(this.random() * free.length)];
+    const dist = (from: number) => {
+      const d = new Array<number>(world.regions.length).fill(Infinity);
+      d[from] = 0;
+      const q = [from];
+      for (let i = 0; i < q.length; i++) {
+        for (const e of world.neighbors(q[i])) {
+          if (d[e.id] === Infinity) {
+            d[e.id] = d[q[i]] + 1;
+            q.push(e.id);
+          }
+        }
+      }
+      return d;
+    };
+    const fromTaken = taken.map((t) => dist(capital(t)));
+    let best = free[0];
+    let bestD = -1;
+    for (const f of free) {
+      const c = capital(f);
+      const d = Math.min(...fromTaken.map((t) => t[c])) + this.random() * 0.5;
+      if (d > bestD) {
+        bestD = d;
+        best = f;
+      }
+    }
+    return best;
+  }
+
+  private sendGameStart(lobby: Lobby, conn: ConnId, identity: string): void {
+    const game = lobby.game;
+    if (!game) return;
+    this.send(conn, { t: 'game.start', map: game.mapId, you: game.playerOf(identity), players: game.players });
+    const shared = game.sharedSnapshot([]);
+    this.send(conn, { t: 'snap', snap: { ...shared, production: game.productionFor(game.playerOf(identity)) } });
+    if (game.over) this.send(conn, { t: 'game.over', winner: game.sim.state.winner });
+  }
+
+  // -- the clock --------------------------------------------------------------------------
+
+  tick(): void {
+    const now = this.deps.clock.now();
+    for (const lobby of [...this.lobbies.values()]) {
+      const anyone = [...lobby.members.values()].some((m) => m.conns.size > 0);
+      if (!anyone) {
+        lobby.emptySince ??= now;
+        if (now - lobby.emptySince > EMPTY_LOBBY_MS) {
+          for (const id of lobby.members.keys()) this.memberOf.delete(id);
+          this.lobbies.delete(lobby.code);
+          this.log(`lobby ${lobby.code} closed (empty)`);
+          continue;
+        }
+      }
+      const game = lobby.game;
+      if (!game || game.over) continue;
+      game.tick();
+      lobby.ticks++;
+      if (lobby.ticks % SNAPSHOT_EVERY_TICKS !== 0 && !game.over) continue;
+      const shared = game.sharedSnapshot(game.takeEvents());
+      for (const m of lobby.members.values()) {
+        if (m.conns.size === 0) continue;
+        const snap = { ...shared, production: game.productionFor(game.playerOf(m.identity.id)) };
+        for (const c of m.conns) this.send(c, { t: 'snap', snap });
+      }
+      if (game.over) this.finish(lobby, game);
+    }
+  }
+
+  private finish(lobby: Lobby, game: Game): void {
+    const winner = game.sim.state.winner;
+    for (const m of lobby.members.values()) for (const c of m.conns) this.send(c, { t: 'game.over', winner });
+    this.broadcastLobby(lobby);
+    const players = game.sim.state.players;
+    this.deps.matches?.recordMatch({
+      map: game.mapId,
+      startedAt: game.startedAt,
+      endedAt: this.deps.clock.now(),
+      players: players.map((p, i) => ({ name: p.name, country: p.country, human: game.players[i].human, alive: p.alive })),
+      winner: winner === null ? null : players[winner].name,
+    });
+    this.log(`lobby ${lobby.code}: ${winner === null ? 'game over' : `${players[winner].name} won`}`);
+  }
+}

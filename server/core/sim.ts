@@ -250,6 +250,8 @@ export class Sim {
     if (typeof blobs === 'string') return blobs;
     if (!this.world.regions[target]) return 'no such region';
     for (const b of blobs) {
+      // Waiting at the edge of a full region: turn back and go from where it came.
+      if (b.progress >= 1) b.progress = 0;
       // On the move: finish the current hop, then follow the new route from there.
       const start = b.progress > 0 ? b.path[0] : b.region;
       const route = this.route(b.type, b.owner, b.training, start, target);
@@ -484,11 +486,12 @@ export class Sim {
 
   private arrive(b: Blob): void {
     const to = b.path[0];
-    // A full region: wait at its edge until there's room.
-    if (this.count(b.owner, to) >= this.stackCap(to)) return;
     const edge = this.world.edge(b.region, to);
     const rs = this.state.regions[to];
     const hostile = this.hostileIn(to, b.owner);
+    // A full region: wait at its edge until there's room, unless just passing through own land.
+    const passing = b.path.length > 1 && rs.owner === b.owner && !hostile;
+    if (!passing && this.count(b.owner, to) >= this.stackCap(to)) return;
     b.path.shift();
     b.region = to;
     b.progress = 0;

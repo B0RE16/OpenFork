@@ -148,7 +148,8 @@ export const BROKE_TRAINING = 0.2;
 
 // -- stacking ---------------------------------------------------------------------------------
 
-/** Tokens one player may have in a region, by size and terrain, plus one per infrastructure level. */
+/** Tokens one player may have standing in a region, by size and terrain, plus one per
+ * infrastructure level. Units only passing through their own land don't count. */
 export const STACK_SIZE: Record<RegionSize, number> = { small: 2, medium: 3, large: 4 };
 export const STACK_TERRAIN: Record<Terrain, number> = { plains: 0, forest: 0, hills: 0, mountains: -1 };
 export const STACK_MIN = 2;
