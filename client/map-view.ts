@@ -4,7 +4,7 @@ import { decodeGrid, type GameMap, WATER } from '../shared/map.ts';
 import type { BlobRow, GamePlayer, RegionRow, Snapshot } from '../shared/protocol.ts';
 import { UNIT_INDEX } from '../shared/protocol.ts';
 import { UNITS } from '../shared/rules.ts';
-import { blit, blitCentred, digitsWidth, FRAME_H, FRAME_W, ICONS, INK, pixelDigits, type Sprite, unitFrame } from './sprites.ts';
+import { blit, blitCentred, FRAME_H, FRAME_W, ICONS, INK, pixelDigits, type Sprite, unitFrame } from './sprites.ts';
 
 export interface Camera {
   x: number;
@@ -441,18 +441,23 @@ export class MapView {
       ctx.fillRect(x0 + px + i * 3 * px, by, 2 * px + (i === 4 ? px : 0), px);
     }
 
-    // Strength number on a solid dark plate below, edged in the owner's colour.
+    // Strength number below, in pixel digits with a thin dark outline (no box).
     const label = String(Math.ceil(b[3]));
     const ds = digitScale(px);
-    const pw = Math.max(PLATE_MIN_W, digitsWidth(label, ds) + 6);
-    const ph = plateHeight(px);
-    const ptop = by + 2 * px;
-    const pleft = Math.round(p.x - pw / 2);
-    ctx.fillStyle = INK;
-    ctx.fillRect(pleft, ptop, pw, ph);
-    ctx.fillStyle = color;
-    ctx.fillRect(pleft, ptop, pw, 1);
-    pixelDigits(ctx, label, p.x, ptop + 1 + ph / 2, ds, '#ffffff');
+    const ny = by + 2 * px + plateHeight(px) / 2;
+    for (const [dx, dy] of [
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+      [-1, -1],
+      [1, -1],
+      [-1, 1],
+      [1, 1],
+    ]) {
+      pixelDigits(ctx, label, p.x + dx, ny + dy, ds, INK);
+    }
+    pixelDigits(ctx, label, p.x, ny, ds, '#ffffff');
 
     // Supply: amber/red block in the top-right corner of the frame.
     if (b[10] < 0.99) {
@@ -491,7 +496,7 @@ export class MapView {
   }
 }
 
-/** The strength plate under each unit: never smaller than this, so numbers stay readable. */
+/** Room under each unit for its number; units in a row are at least this far apart. */
 const PLATE_MIN_W = 22;
 const digitScale = (px: number) => (px >= 2 ? 3 : 2);
 const plateHeight = (px: number) => 5 * digitScale(px) + 5;
