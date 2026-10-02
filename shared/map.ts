@@ -4,7 +4,7 @@
 // The map is a pixel grid. Every land pixel belongs to one region; water is WATER. The
 // terrain picture is a separate PNG of the same size (public/maps/<id>-terrain.png).
 
-export const WATER = 255;
+export const WATER = 0xffff;
 
 export type Terrain = 'plains' | 'forest' | 'hills' | 'mountains';
 export const TERRAINS: readonly Terrain[] = ['plains', 'forest', 'hills', 'mountains'];
@@ -65,41 +65,47 @@ export interface GameMap {
   attribution: string;
 }
 
-/** Run-length encodes a byte grid as base64 of (value, run length as LEB128) pairs. */
-export function encodeGrid(cells: Uint8Array): string {
+/** Run-length encodes the grid as base64 of (value, run length) pairs, both LEB128. */
+export function encodeGrid(cells: Uint16Array): string {
   const out: number[] = [];
-  let i = 0;
-  while (i < cells.length) {
-    const v = cells[i];
-    let run = 1;
-    while (i + run < cells.length && cells[i + run] === v) run++;
-    out.push(v);
-    let n = run;
+  const leb = (n: number) => {
     while (n >= 0x80) {
       out.push((n & 0x7f) | 0x80);
       n >>>= 7;
     }
     out.push(n);
+  };
+  let i = 0;
+  while (i < cells.length) {
+    const v = cells[i];
+    let run = 1;
+    while (i + run < cells.length && cells[i + run] === v) run++;
+    leb(v);
+    leb(run);
     i += run;
   }
   return bytesToBase64(Uint8Array.from(out));
 }
 
-export function decodeGrid(data: string, size: number): Uint8Array {
+export function decodeGrid(data: string, size: number): Uint16Array {
   const bytes = base64ToBytes(data);
-  const cells = new Uint8Array(size);
+  const cells = new Uint16Array(size);
   let at = 0;
   let i = 0;
-  while (i < bytes.length) {
-    const v = bytes[i++];
-    let run = 0;
+  const leb = () => {
+    let n = 0;
     let shift = 0;
     let b: number;
     do {
       b = bytes[i++];
-      run |= (b & 0x7f) << shift;
+      n |= (b & 0x7f) << shift;
       shift += 7;
     } while (b & 0x80);
+    return n;
+  };
+  while (i < bytes.length) {
+    const v = leb();
+    const run = leb();
     if (at + run > size) throw new Error('map grid overruns its size');
     cells.fill(v, at, at + run);
     at += run;

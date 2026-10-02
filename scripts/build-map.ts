@@ -25,7 +25,7 @@ import { drawLine, fillPolygon, Grid, Laea, lines, polygons } from './map/geo.ts
 import { Elevation, LandCover, naturalEarth } from './map/sources.ts';
 
 const KM = 3; // km per pixel
-const TARGET_REGIONS = 140;
+const TARGET_REGIONS = 300;
 const AREA_EXPONENT = 0.75; // how strongly a country's area sets its share of regions
 const MIN_FRACTION = 0.3; // regions smaller than this × median are merged away
 const SPLIT_FRACTION = 1.7; // regions bigger than this × their country's average are split
@@ -330,7 +330,7 @@ if (groups.size >= WATER) throw new Error(`too many regions (${groups.size})`);
 // Number the regions 0..n-1.
 const groupIds = [...groups.keys()];
 const indexOf = new Map(groupIds.map((g, r) => [g, r]));
-const regionOf = new Uint8Array(N).fill(WATER);
+const regionOf = new Uint16Array(N).fill(WATER);
 for (let i = 0; i < N; i++) if (owner[i] !== -1) regionOf[i] = indexOf.get(owner[i]) as number;
 const R = groupIds.length;
 
@@ -555,7 +555,7 @@ const regions: Region[] = groupIds.map((g, r) => {
     neighbors,
   };
 });
-dedupeNames(regions);
+dedupeNames(regions, new Set(regions.filter((r) => names[r.id]).map((r) => r.id)));
 
 // -- 4. the terrain picture ------------------------------------------------------------------
 
@@ -754,17 +754,25 @@ function labelPoints(): Array<[number, number]> {
   return best.map((b) => [b[2], b[3]]);
 }
 
-function dedupeNames(list: Region[]): void {
+/**
+ * Gives regions that share a name a compass prefix. A region named after a city it really
+ * contains keeps the plain name (the others are parts of the province around it).
+ */
+function dedupeNames(list: Region[], fromPlace: Set<number>): void {
   const by = new Map<string, Region[]>();
   for (const r of list) by.set(r.name, [...(by.get(r.name) ?? []), r]);
-  for (const [name, same] of by) {
-    if (same.length < 2) continue;
-    const cx = same.reduce((s, r) => s + r.x, 0) / same.length;
-    const cy = same.reduce((s, r) => s + r.y, 0) / same.length;
+  for (const [name, all] of by) {
+    if (all.length < 2) continue;
+    const real = all.filter((r) => fromPlace.has(r.id));
+    const same = real.length === 1 ? all.filter((r) => r !== real[0]) : all;
+    const ref = real.length === 1 ? [real[0]] : same;
+    const cx = ref.reduce((s, r) => s + r.x, 0) / ref.length;
+    const cy = ref.reduce((s, r) => s + r.y, 0) / ref.length;
     for (const r of same) {
       const dx = r.x - cx;
       const dy = r.y - cy;
-      const dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'East' : 'West') : dy > 0 ? 'South' : 'North';
+      const dirs = ['East', 'Southeast', 'South', 'Southwest', 'West', 'Northwest', 'North', 'Northeast'];
+      const dir = dirs[(Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) + 8) % 8];
       r.name = `${dir} ${name}`;
     }
     const again = new Map<string, number>();

@@ -2,7 +2,7 @@
 // messages and calls tick() every TICK_MS (see server/main.ts).
 import type { GameMap } from '../../shared/map.ts';
 import type { ClientMessage, LobbyMember, LobbySettings, LobbyView, ServerMessage } from '../../shared/protocol.ts';
-import { MAX_PLAYERS, MIN_PLAYERS, PLAYER_COLORS, SNAPSHOT_EVERY_TICKS } from '../../shared/rules.ts';
+import { MAX_PLAYERS, MIN_CAPITAL_KM, MIN_PLAYERS, PLAYER_COLORS, SNAPSHOT_EVERY_TICKS } from '../../shared/rules.ts';
 import { Game, type Seat } from './game.ts';
 import { parseClientMessage } from './parse.ts';
 import type { Auth, Clock, ConnId, Identity, MatchLog, Transport } from './ports.ts';
@@ -274,19 +274,33 @@ export class GameServer {
     const playable = world.map.countries.filter((c) => c.playable);
     const humans = [...lobby.members.values()].filter((m) => m.conns.size > 0).slice(0, size);
     const taken = new Set<string>();
-    const seats: Seat[] = [];
-    const shuffled = [...playable].sort(() => this.random() - 0.5);
-    for (const m of humans) {
-      let country = s.pick === 'free' ? m.country : null;
-      if (country && taken.has(country)) country = null;
-      country ??= shuffled.find((c) => !taken.has(c.id))?.id ?? null;
-      if (!country) break;
-      taken.add(country);
-      seats.push({ human: m.identity.id, setup: { name: m.identity.name, country, color: '', control: 'human', difficulty: s.difficulty } });
+    const free = () => playable.filter((c) => !taken.has(c.id)).map((c) => c.id);
+    // Free picks first; everyone else is dealt a country whose capital is well away from
+    // those already taken (spawn spacing).
+    const country = new Map<string, string>();
+    if (s.pick === 'free') {
+      for (const m of humans) {
+        if (m.country && !taken.has(m.country)) {
+          taken.add(m.country);
+          country.set(m.identity.id, m.country);
+        }
+      }
     }
-    // Bots take the countries farthest from everyone already seated.
+    for (const m of humans) {
+      if (country.has(m.identity.id)) continue;
+      const pick = this.spacedCountry(world, free(), [...taken]);
+      if (!pick) break;
+      taken.add(pick);
+      country.set(m.identity.id, pick);
+    }
+    const seats: Seat[] = humans
+      .filter((m) => country.has(m.identity.id))
+      .map((m) => ({
+        human: m.identity.id,
+        setup: { name: m.identity.name, country: country.get(m.identity.id) as string, color: '', control: 'human', difficulty: s.difficulty },
+      }));
     while (seats.length < size) {
-      const pick = this.farthestCountry(world, playable.filter((c) => !taken.has(c.id)).map((c) => c.id), [...taken]);
+      const pick = this.spacedCountry(world, free(), [...taken]);
       if (!pick) break;
       taken.add(pick);
       const name = playable.find((c) => c.id === pick)?.name ?? pick;
@@ -304,36 +318,26 @@ export class GameServer {
     return null;
   }
 
-  private farthestCountry(world: World, free: string[], taken: string[]): string | null {
+  /**
+   * A country whose capital is at least MIN_CAPITAL_KM from every taken one, at random; if
+   * none is that far, the one farthest from its nearest taken capital.
+   */
+  private spacedCountry(world: World, free: string[], taken: string[]): string | null {
     if (!free.length) return null;
-    const capital = (id: string) => world.map.countries.find((c) => c.id === id)?.capital ?? -1;
-    if (!taken.length) return free[Math.floor(this.random() * free.length)];
-    const dist = (from: number) => {
-      const d = new Array<number>(world.regions.length).fill(Infinity);
-      d[from] = 0;
-      const q = [from];
-      for (let i = 0; i < q.length; i++) {
-        for (const e of world.neighbors(q[i])) {
-          if (d[e.id] === Infinity) {
-            d[e.id] = d[q[i]] + 1;
-            q.push(e.id);
-          }
-        }
+    const regions = world.map.regions;
+    const capital = (id: string) => regions[world.map.countries.find((c) => c.id === id)?.capital ?? 0];
+    const nearest = (id: string) => {
+      const a = capital(id);
+      let d = Infinity;
+      for (const t of taken) {
+        const b = capital(t);
+        d = Math.min(d, Math.hypot(a.x - b.x, a.y - b.y) * world.map.kmPerPx);
       }
       return d;
     };
-    const fromTaken = taken.map((t) => dist(capital(t)));
-    let best = free[0];
-    let bestD = -1;
-    for (const f of free) {
-      const c = capital(f);
-      const d = Math.min(...fromTaken.map((t) => t[c])) + this.random() * 0.5;
-      if (d > bestD) {
-        bestD = d;
-        best = f;
-      }
-    }
-    return best;
+    const spaced = free.filter((f) => nearest(f) >= MIN_CAPITAL_KM);
+    if (spaced.length) return spaced[Math.floor(this.random() * spaced.length)];
+    return free.reduce((best, f) => (nearest(f) > nearest(best) ? f : best));
   }
 
   private sendGameStart(lobby: Lobby, conn: ConnId, identity: string): void {

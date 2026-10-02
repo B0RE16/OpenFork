@@ -25,15 +25,15 @@ function testMap(): GameMap {
   return map;
 }
 
-function setup() {
+function setup(map: GameMap = testMap(), seed = 3) {
   const inbox = new Map<string, ServerMessage[]>();
   let now = 0;
   const server = new GameServer({
     transport: { send: (conn, msg) => inbox.set(conn, [...(inbox.get(conn) ?? []), msg]) },
     auth: new GuestAuth(),
     clock: { now: () => now },
-    maps: new Map([['europe', testMap()]]),
-    random: mulberry32(3),
+    maps: new Map([['europe', map]]),
+    random: mulberry32(seed),
   });
   const last = <T extends ServerMessage['t']>(conn: string, t: T) =>
     (inbox.get(conn) ?? []).filter((m) => m.t === t).at(-1) as Extract<ServerMessage, { t: T }> | undefined;
@@ -133,6 +133,35 @@ describe('lobbies', () => {
     assert.equal(t.last('a2', 'game.start')?.you, 0);
     const snap = t.last('a2', 'snap')?.snap;
     assert.equal(snap?.players[0].bot, false);
+  });
+
+  it('keeps bot capitals at least MIN_CAPITAL_KM from taken ones', async () => {
+    // Capitals 300 km apart per step: BB is right next to AA, the rest are spread out.
+    const map = makeMap(
+      Array.from({ length: 10 }, () => ({})),
+      chain(10),
+      [
+        { id: 'AA', capital: 0 },
+        { id: 'BB', capital: 1 },
+        { id: 'FF', capital: 3 },
+        { id: 'CC', capital: 5 },
+        { id: 'DD', capital: 7 },
+        { id: 'EE', capital: 9 },
+      ],
+    );
+    map.id = 'europe';
+    map.kmPerPx = 30;
+    for (let seed = 0; seed < 5; seed++) {
+      const t = setup(map, seed + 10);
+      await t.connect('a', 'Ann');
+      await t.send('a', { t: 'lobby.create' });
+      await t.send('a', { t: 'lobby.settings', settings: { size: 4 } });
+      await t.send('a', { t: 'lobby.pick', country: 'AA' });
+      await t.send('a', { t: 'lobby.start' });
+      const countries = t.last('a', 'game.start')?.players.map((p) => p.country) ?? [];
+      assert.equal(countries.length, 4);
+      assert.ok(!countries.includes('BB'), `BB is too close to AA: ${countries}`);
+    }
   });
 
   it('rejects malformed messages', async () => {

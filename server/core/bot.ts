@@ -76,7 +76,7 @@ export class Bot {
 
     // Factories once there's steel to use.
     const factories = mine.filter((r) => regions[r].factory).length;
-    if (this.style.tanks && factories < 1 + Math.floor(mine.length / 15) && me.resources.steel >= 40) {
+    if (this.style.tanks && factories < 1 + Math.floor(mine.length / 30) && me.resources.steel >= 40) {
       const site = mine.find((r) => {
         const t = sim.world.regions[r].traits;
         return regions[r].supplied && !regions[r].factory && !regions[r].construction && (t.includes('industry') || t.includes('city'));
@@ -86,7 +86,7 @@ export class Bot {
 
     // More barracks as the country grows, close to the front.
     const barracks = mine.filter((r) => regions[r].barracks).length;
-    if (barracks < 1 + Math.floor(mine.length / 6)) {
+    if (barracks < 1 + Math.floor(mine.length / 12)) {
       const site = mine
         .filter((r) => regions[r].supplied && !regions[r].barracks && !regions[r].construction)
         .sort((a, b) => this.frontDistance(sim, a) - this.frontDistance(sim, b))[0];

@@ -155,16 +155,38 @@ export class Sim {
     return this.state.players[id];
   }
 
+  /** Standing blobs by region, rebuilt only after something moved, spawned or died. */
+  private index: Map<number, Blob[]> | null = null;
+  private indexSize = -1;
+
+  private standing(): Map<number, Blob[]> {
+    // The size check also catches blobs added or removed from outside (tests).
+    if (this.index && this.indexSize === this.state.blobs.size) return this.index;
+    const index = new Map<number, Blob[]>();
+    for (const b of this.state.blobs.values()) {
+      if (b.progress !== 0) continue;
+      const list = index.get(b.region);
+      if (list) list.push(b);
+      else index.set(b.region, [b]);
+    }
+    this.index = index;
+    this.indexSize = this.state.blobs.size;
+    return index;
+  }
+
+  /** Call after a blob starts or stops moving between regions, or leaves the game. */
+  private touch(): void {
+    this.index = null;
+  }
+
   /** Blobs standing in a region (not on the move between regions). */
   blobsIn(region: number): Blob[] {
-    const out: Blob[] = [];
-    for (const b of this.state.blobs.values()) if (b.region === region && b.progress === 0) out.push(b);
-    return out;
+    return [...(this.standing().get(region) ?? [])];
   }
 
   count(owner: number, region: number): number {
     let n = 0;
-    for (const b of this.state.blobs.values()) if (b.owner === owner && b.region === region && b.progress === 0) n++;
+    for (const b of this.standing().get(region) ?? []) if (b.owner === owner) n++;
     return n;
   }
 
@@ -175,7 +197,7 @@ export class Sim {
   /** Owners with blobs standing in a region. */
   ownersIn(region: number): Set<number> {
     const s = new Set<number>();
-    for (const b of this.state.blobs.values()) if (b.region === region && b.progress === 0) s.add(b.owner);
+    for (const b of this.standing().get(region) ?? []) s.add(b.owner);
     return s;
   }
 
@@ -184,7 +206,7 @@ export class Sim {
   }
 
   hostileIn(region: number, owner: number): boolean {
-    for (const b of this.state.blobs.values()) if (b.region === region && b.progress === 0 && b.owner !== owner) return true;
+    for (const b of this.standing().get(region) ?? []) if (b.owner !== owner) return true;
     return false;
   }
 
@@ -251,7 +273,10 @@ export class Sim {
     if (!this.world.regions[target]) return 'no such region';
     for (const b of blobs) {
       // Waiting at the edge of a full region: turn back and go from where it came.
-      if (b.progress >= 1) b.progress = 0;
+      if (b.progress >= 1) {
+        b.progress = 0;
+        this.touch();
+      }
       // On the move: finish the current hop, then follow the new route from there.
       const start = b.progress > 0 ? b.path[0] : b.region;
       const route = this.route(b.type, b.owner, b.training, start, target);
@@ -326,7 +351,7 @@ export class Sim {
       into.entrench = Math.min(into.entrench, b.entrench);
       b.size -= take;
       b.strength -= str;
-      if (b.size <= 0 || b.strength < MIN_STRENGTH) this.state.blobs.delete(b.id);
+      if (b.size <= 0 || b.strength < MIN_STRENGTH) this.remove(b.id);
     }
     return null;
   }
@@ -477,6 +502,7 @@ export class Sim {
         b.entrench = 0;
       }
       const next = b.path[0];
+      if (b.progress === 0) this.touch(); // leaving its region
       if (b.progress < 1) {
         b.progress = Math.min(1, b.progress + dt / this.travelSeconds(b.type, b.owner, b.region, next));
       }
@@ -495,6 +521,7 @@ export class Sim {
     b.path.shift();
     b.region = to;
     b.progress = 0;
+    this.touch();
     b.entrench = 0;
     b.crossedRiver = !!edge?.river && rs.owner !== b.owner;
     b.hold = b.path.length > 0 && (rs.owner !== b.owner || hostile);
@@ -605,7 +632,7 @@ export class Sim {
     this.state.regions.forEach((rs, i) => {
       if (rs.owner === playerId) this.setOwner(i, NEUTRAL);
     });
-    for (const b of [...this.state.blobs.values()]) if (b.owner === playerId) this.state.blobs.delete(b.id);
+    for (const b of [...this.state.blobs.values()]) if (b.owner === playerId) this.remove(b.id);
     this.events.push({ kind: 'eliminated', player: playerId, by });
     const alive = this.state.players.filter((x) => x.alive);
     if (alive.length === 1) {
@@ -703,7 +730,7 @@ export class Sim {
         b.strength -= BROKE_LOSS * b.size * dt;
         b.training = Math.max(0, b.training - BROKE_TRAINING * dt);
       }
-      if (b.strength < MIN_STRENGTH) this.state.blobs.delete(b.id);
+      if (b.strength < MIN_STRENGTH) this.remove(b.id);
     }
   }
 
@@ -726,7 +753,13 @@ export class Sim {
       hold: false,
     };
     this.state.blobs.set(b.id, b);
+    this.touch();
     return b;
+  }
+
+  private remove(id: number): void {
+    this.state.blobs.delete(id);
+    this.touch();
   }
 
   canAfford(p: Player, cost: Resources): boolean {

@@ -25,12 +25,12 @@ export class MapView {
   readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   readonly map: GameMap;
-  readonly grid: Uint8Array;
+  readonly grid: Uint16Array;
   private readonly terrain: HTMLImageElement;
   private readonly territory: HTMLCanvasElement;
   private readonly highlight: HTMLCanvasElement;
   private readonly edges: Int32Array;
-  private readonly edgeOther: Uint8Array;
+  private readonly edgeOther: Uint16Array;
   private ownersKey = '';
   private highlighted = -2;
   cam: Camera = { x: 0, y: 0, scale: 1 };
@@ -66,7 +66,7 @@ export class MapView {
       }
     }
     this.edges = Int32Array.from(edges);
-    this.edgeOther = Uint8Array.from(other);
+    this.edgeOther = Uint16Array.from(other);
   }
 
   // -- camera -----------------------------------------------------------------------------

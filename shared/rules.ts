@@ -78,7 +78,7 @@ export const UNITS: Record<UnitType, UnitStats> = {
 // -- movement ---------------------------------------------------------------------------------
 
 /** Seconds for a speed-1 blob to go between two regions a typical distance apart, on plains. */
-export const CROSS_SECONDS = 8;
+export const CROSS_SECONDS = 5.5;
 export const TERRAIN_MOVE: Record<Terrain, number> = { plains: 1, forest: 0.7, hills: 0.6, mountains: 0.4 };
 /** Speed into enemy-owned land (zone of control), and how much each fort level there takes off. */
 export const ENEMY_LAND_MOVE = 0.7;
@@ -92,7 +92,7 @@ export const RETREAT_TRAINING_LOSS = 10;
 // -- capturing --------------------------------------------------------------------------------
 
 /** Seconds to capture an empty medium plains region with untrained blobs, before modifiers. */
-export const CAPTURE_SECONDS = 6;
+export const CAPTURE_SECONDS = 4;
 export const CAPTURE_SIZE: Record<RegionSize, number> = { small: 0.7, medium: 1, large: 1.4 };
 export const CAPTURE_TERRAIN: Record<Terrain, number> = { plains: 1, forest: 1.2, hills: 1.3, mountains: 1.6 };
 /** Each fort level adds this share to capture time. */
@@ -129,7 +129,7 @@ export const MERGE_PENALTY = 10;
 // -- supply -----------------------------------------------------------------------------------
 
 /** A region is supplied if a hub (capital or owned city) is at most this many owned regions away. */
-export const SUPPLY_RANGE = 4;
+export const SUPPLY_RANGE = 6;
 /** Supply capacity of a region, by terrain, and what infrastructure and cities add. */
 export const SUPPLY_BASE = 30;
 export const SUPPLY_TERRAIN: Record<Terrain, number> = { plains: 1, forest: 0.9, hills: 0.8, mountains: 0.6 };
@@ -156,12 +156,12 @@ export const STACK_MIN = 2;
 
 // -- economy ----------------------------------------------------------------------------------
 
-export const BASE_YIELD: Resources = { money: 0.5, manpower: 0.3, steel: 0, oil: 0 };
+export const BASE_YIELD: Resources = { money: 0.25, manpower: 0.15, steel: 0, oil: 0 };
 export const TRAIT_YIELD: Record<Trait, Partial<Resources>> = {
   city: { money: 1.5, manpower: 0.3 },
   industry: { steel: 1, money: 0.3 },
   oil: { oil: 0.8 },
-  farmland: { manpower: 0.8 },
+  farmland: { manpower: 0.35 },
 };
 
 export type StartingResources = 'low' | 'normal' | 'high';
@@ -198,11 +198,13 @@ export function canBuildOn(kind: BuildingKind, traits: readonly Trait[]): boolea
 // -- the start --------------------------------------------------------------------------------
 
 /** Regions around the capital owned at the start (besides the capital). */
-export const START_EXTRA_REGIONS = 2;
+export const START_EXTRA_REGIONS = 4;
 export const START_INFANTRY = 3;
 
 // -- lobby ------------------------------------------------------------------------------------
 
+/** Bot fill and random deals keep capitals at least this far apart (spawn spacing). */
+export const MIN_CAPITAL_KM = 600;
 export const MIN_PLAYERS = 4;
 export const MAX_PLAYERS = 8;
 export type BotDifficulty = 'easy' | 'normal' | 'hard';
