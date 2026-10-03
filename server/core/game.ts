@@ -205,7 +205,7 @@ export class Game {
         round(b.progress, 3),
         round(b.entrench, 2),
         round(b.supply, 2),
-        (b.hold ? 1 : 0) | (b.crossedRiver ? 2 : 0),
+        (b.hold ? 1 : 0) | (b.crossedRiver ? 2 : 0) | (b.attacking >= 0 ? 4 : 0),
         b.from,
       ]);
     }
