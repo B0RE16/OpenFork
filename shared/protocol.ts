@@ -29,7 +29,9 @@ export type Order =
   /** Offer peace to a country, or accept its offer. */
   | { o: 'peace'; player: number }
   /** Turn down a country's offer of peace. */
-  | { o: 'refuse'; player: number };
+  | { o: 'refuse'; player: number }
+  /** Give up: your land goes neutral and your units disband, as if your capital fell. */
+  | { o: 'surrender' };
 
 export interface LobbySettings {
   map: string;
@@ -117,7 +119,7 @@ export type GameEvent =
   | { kind: 'captured'; region: number; by: number; from: number }
   | { kind: 'built'; region: number; owner: number; building: BuildingKind; level: number }
   | { kind: 'produced'; region: number; owner: number; type: UnitType }
-  | { kind: 'eliminated'; player: number; by: number }
+  | { kind: 'eliminated'; player: number; by: number; surrendered?: boolean }
   | { kind: 'won'; player: number };
 
 export interface Snapshot {

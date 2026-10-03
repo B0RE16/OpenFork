@@ -14,8 +14,15 @@ void document.fonts?.load('700 12px "Pixelify Sans"');
 let me: { id: string; name: string } | null = null;
 let lobby: LobbyView | null = null;
 let game: GameScreen | null = null;
-const maps = new Map<string, { map: GameMap; terrain: HTMLImageElement }>();
+// Map data and terrain load once each (shared promises), and start loading on page load:
+// the lobby only needs the small map data; the big terrain image is only needed in game.
+const mapData = new Map<string, Promise<GameMap>>();
+const terrains = new Map<string, Promise<HTMLImageElement>>();
+/** Map data that has arrived, for drawing the lobby without waiting a frame. */
+const loadedMaps = new Map<string, GameMap>();
 let connected = false;
+/** A game started and its map is still loading. */
+let loadingGame = false;
 /** The person already asked to create or join a lobby this visit. */
 let asked = false;
 
@@ -79,31 +86,73 @@ $('#copy-link').onclick = async () => {
   }
 };
 
-async function loadMap(id: string): Promise<{ map: GameMap; terrain: HTMLImageElement }> {
-  const cached = maps.get(id);
-  if (cached) return cached;
-  const [map, terrain] = await Promise.all([
-    fetch(`maps/${id}.json`).then((r) => r.json() as Promise<GameMap>),
-    new Promise<HTMLImageElement>((resolve, reject) => {
+function loadMapData(id: string): Promise<GameMap> {
+  let p = mapData.get(id);
+  if (!p) {
+    p = fetch(`maps/${id}.json`).then((r) => {
+      if (!r.ok) throw new Error(`map ${id}: ${r.status}`);
+      return r.json() as Promise<GameMap>;
+    });
+    p.then((map) => loadedMaps.set(id, map), () => {});
+    // A failed load is retried next time instead of being remembered.
+    p.catch(() => mapData.delete(id));
+    mapData.set(id, p);
+  }
+  return p;
+}
+
+function loadTerrain(id: string): Promise<HTMLImageElement> {
+  let p = terrains.get(id);
+  if (!p) {
+    p = new Promise<HTMLImageElement>((resolve, reject) => {
       const img = new Image();
       img.onload = () => resolve(img);
-      img.onerror = reject;
+      img.onerror = () => reject(new Error(`terrain ${id} failed to load`));
       img.src = `maps/${id}-terrain.png`;
-    }),
-  ]);
-  const entry = { map, terrain };
-  maps.set(id, entry);
-  return entry;
+    });
+    p.catch(() => terrains.delete(id));
+    terrains.set(id, p);
+  }
+  return p;
 }
+
+async function loadMap(id: string): Promise<{ map: GameMap; terrain: HTMLImageElement }> {
+  const [map, terrain] = await Promise.all([loadMapData(id), loadTerrain(id)]);
+  return { map, terrain };
+}
+
+// Start fetching the only map while the person types their name: the small map data first,
+// then (once the page has loaded, so it doesn't hold the page up) the big terrain image.
+loadMapData('europe')
+  .catch(() => {})
+  .finally(() => {
+    const terrain = () => loadTerrain('europe').catch(() => {});
+    if (document.readyState === 'complete') terrain();
+    else window.addEventListener('load', terrain, { once: true });
+  });
 
 async function renderLobby(): Promise<void> {
   if (!lobby || !me) return;
-  const host = lobby.host === me.id;
   $('#lobby-code').textContent = lobby.code;
   history.replaceState(null, '', `?lobby=${lobby.code}`);
-  const { map } = await loadMap(lobby.settings.map);
-  if (!lobby) return; // left while the map loaded
+  // Everything but the country list draws at once; the list waits for the map data.
+  let map = loadedMaps.get(lobby.settings.map) ?? null;
+  if (!map) {
+    renderLobbyBody(null);
+    try {
+      map = await loadMapData(lobby.settings.map);
+    } catch {
+      $('#countries').replaceChildren(el('p', { class: 'hint' }, ['Could not load the map. Reload the page to try again.']));
+      return;
+    }
+    if (!lobby) return; // left while the map loaded
+  }
+  renderLobbyBody(map);
+}
 
+function renderLobbyBody(map: GameMap | null): void {
+  if (!lobby || !me) return;
+  const host = lobby.host === me.id;
   const members = $('#members');
   members.replaceChildren(
     ...lobby.members.map((m) =>
@@ -151,6 +200,19 @@ async function renderLobby(): Promise<void> {
     ]),
   );
 
+  const start = $('#start') as HTMLButtonElement;
+  start.disabled = !host || lobby.playing;
+  $('#lobby-status').textContent = loadingGame
+    ? 'Loading the map…'
+    : lobby.playing
+      ? 'A game is running.'
+      : host
+        ? `${lobby.members.length} ${lobby.members.length === 1 ? 'person' : 'people'} here; bots fill up to ${s.size}.`
+        : 'Waiting for the host to start.';
+  if (!map) {
+    $('#countries').replaceChildren(el('p', { class: 'hint' }, ['Loading the map…']));
+    return;
+  }
   const capitalIcon = spriteUrl(ICONS.capital, 2);
   const mine = lobby.members.find((m) => m.id === me?.id)?.country ?? null;
   const takenBy = new Map(lobby.members.filter((m) => m.country).map((m) => [m.country as string, m.name]));
@@ -171,16 +233,9 @@ async function renderLobby(): Promise<void> {
         return b;
       }),
   );
-  const start = $('#start') as HTMLButtonElement;
-  start.disabled = !host || lobby.playing;
-  $('#lobby-status').textContent = lobby.playing
-    ? 'A game is running.'
-    : host
-      ? `${lobby.members.length} ${lobby.members.length === 1 ? 'person' : 'people'} here; bots fill up to ${s.size}.`
-      : 'Waiting for the host to start.';
 
   function countryName(id: string): string {
-    return map.countries.find((c) => c.id === id)?.name ?? id;
+    return map?.countries.find((c) => c.id === id)?.name ?? id;
   }
 }
 
@@ -217,7 +272,19 @@ net.onMessage = async (msg: ServerMessage) => {
       }
       return;
     case 'game.start': {
-      const { map, terrain } = await loadMap(msg.map);
+      // The terrain may still be on its way: say so in the lobby meanwhile.
+      loadingGame = true;
+      if (!game) renderLobbyBody(await loadMapData(msg.map).catch(() => null));
+      let loaded: { map: GameMap; terrain: HTMLImageElement };
+      try {
+        loaded = await loadMap(msg.map);
+      } catch {
+        loadingGame = false;
+        toast('Could not load the map. Reload the page to try again.');
+        return;
+      }
+      loadingGame = false;
+      const { map, terrain } = loaded;
       game?.destroy();
       game = new GameScreen(net, map, terrain, msg.you, msg.players, () => {
         game?.destroy();

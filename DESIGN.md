@@ -19,6 +19,10 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
   capitals will win together.
 - **Losing your capital** eliminates you: your land goes neutral and empty, and your blobs
   disband.
+- **Surrender** (Menu / Esc) does the same at once; you watch the rest of the game.
+- **Back to menu** leaves the lobby; in a game you're still alive in, a bot plays your
+  country on. A game nobody is playing or watching (no one connected for 30 s) ends with
+  no winner.
 
 ## 2. Map
 - v1 map: **Europe, modern countries, mainland only, Atlantic to the Urals** (no UK, Ireland,

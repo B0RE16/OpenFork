@@ -133,7 +133,14 @@ export class Game {
         return s.offerPeace(id, order.player);
       case 'refuse':
         return s.refusePeace(id, order.player);
+      case 'surrender':
+        return s.surrender(id);
     }
+  }
+
+  /** Stops the game with no winner (nobody left to play or watch it). */
+  end(): void {
+    this.over = true;
   }
 
   tick(): void {

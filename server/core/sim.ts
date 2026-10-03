@@ -959,7 +959,16 @@ export class Sim {
     rs.production = { barracks: emptyLine(), factory: emptyLine() };
   }
 
-  private eliminate(playerId: number, by: number): void {
+  /** Gives up: the country goes the way of one whose capital fell. */
+  surrender(playerId: number): string | null {
+    const p = this.state.players[playerId];
+    if (!p?.alive) return 'already out of the game';
+    if (this.state.winner !== null) return 'the game is over';
+    this.eliminate(playerId, playerId, true);
+    return null;
+  }
+
+  private eliminate(playerId: number, by: number, surrendered = false): void {
     const p = this.state.players[playerId];
     p.alive = false;
     this.state.regions.forEach((rs, i) => {
@@ -968,7 +977,7 @@ export class Sim {
     for (const b of [...this.state.blobs.values()]) if (b.owner === playerId) this.remove(b.id);
     for (const key of [...this.state.wars]) if (key.split(':').map(Number).includes(playerId)) this.state.wars.delete(key);
     for (const key of [...this.state.peaceOffers.keys()]) if (key.split('>').map(Number).includes(playerId)) this.state.peaceOffers.delete(key);
-    this.events.push({ kind: 'eliminated', player: playerId, by });
+    this.events.push({ kind: 'eliminated', player: playerId, by, ...(surrendered ? { surrendered } : {}) });
     const alive = this.state.players.filter((x) => x.alive);
     if (alive.length === 1) {
       this.state.winner = alive[0].id;

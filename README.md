@@ -38,6 +38,7 @@ to your friends, pick countries, and start. Bots fill the empty seats.
 | 1–9 or the build bar | placement mode: farm, mine, oil well, market, city (found or expand), fort, barracks, factory, road. Click one of your regions (roads: drag across regions); Shift places more, Esc / right click stops; a busy region queues it |
 | Q / E | queue infantry / tanks at the selected region's barracks / factory |
 | V | supply overlay: hubs, reach, cut-off regions, load per region |
+| Esc / Menu button | menu: surrender, or back to the main menu (a bot plays your country on); Esc first clears a selection or placement |
 | M / Sound button | sound on or off (remembered) |
 | FX button | effects full or reduced (reduced drops the ambient water, clouds, smoke and traffic; it switches itself on a struggling machine) |
 | Minimap (bottom right) | click or drag to move the view |

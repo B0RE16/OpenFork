@@ -135,6 +135,38 @@ describe('lobbies', () => {
     assert.equal(snap?.players[0].bot, false);
   });
 
+  it('surrendering knocks your country out; you keep watching', async () => {
+    const t = setup();
+    await t.connect('a', 'Ann');
+    await t.send('a', { t: 'lobby.create' });
+    await t.send('a', { t: 'lobby.start' });
+    await t.send('a', { t: 'order', order: { o: 'surrender' } });
+    t.tick(SNAPSHOT_EVERY_TICKS);
+    const snap = t.last('a', 'snap')?.snap;
+    assert.equal(snap?.players[0].alive, false);
+    assert.ok(snap?.regions.every((r) => r[0] !== 0), 'the land goes neutral');
+    assert.ok(snap?.blobs.every((b) => b[1] !== 0), 'the units disband');
+    const events = (t.inbox.get('a') ?? []).flatMap((m) => (m.t === 'snap' ? m.snap.events : []));
+    assert.ok(events.some((e) => e.kind === 'eliminated' && e.player === 0 && e.surrendered));
+    await t.send('a', { t: 'order', order: { o: 'surrender' } });
+    assert.equal(t.last('a', 'error')?.message, 'already out of the game');
+  });
+
+  it('a game nobody plays or watches ends after a while', async () => {
+    const t = setup();
+    const w = await t.connect('a', 'Ann');
+    await t.send('a', { t: 'lobby.create' });
+    await t.send('a', { t: 'lobby.start' });
+    t.server.handleDisconnect('a');
+    t.tick(20 * 10);
+    await t.connect('a2', 'Ann', w?.token);
+    assert.equal(t.last('a2', 'lobby')?.lobby?.playing, true, 'a quick reload keeps it going');
+    t.server.handleDisconnect('a2');
+    t.tick(31 * 10);
+    await t.connect('a3', 'Ann', w?.token);
+    assert.equal(t.last('a3', 'lobby')?.lobby?.playing, false);
+  });
+
   it('keeps bot capitals at least MIN_CAPITAL_KM from taken ones', async () => {
     // Capitals 300 km apart per step: BB is right next to AA, the rest are spread out.
     const map = makeMap(

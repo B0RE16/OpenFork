@@ -157,6 +157,19 @@ describe('movement', () => {
   });
 });
 
+describe('surrender', () => {
+  it('ends the country like a fallen capital; the last one standing wins', () => {
+    const s = duel();
+    assert.equal(s.surrender(0), null);
+    assert.equal(s.state.players[0].alive, false);
+    assert.ok(s.state.regions.every((r) => r.owner !== 0));
+    assert.ok([...s.state.blobs.values()].every((b) => b.owner !== 0));
+    assert.equal(s.state.winner, 1);
+    assert.ok(s.drainEvents().some((e) => e.kind === 'eliminated' && e.player === 0 && e.surrendered));
+    assert.match(s.surrender(0) ?? '', /already out/);
+  });
+});
+
 describe('battles', () => {
   it('units in a fight can only retreat, never slip past the enemy', () => {
     const s = duel();

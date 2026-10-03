@@ -45,6 +45,8 @@ function order(v: unknown): Order | null {
     case 'peace':
     case 'refuse':
       return isInt(v.player) ? { o: v.o, player: v.player } : null;
+    case 'surrender':
+      return { o: 'surrender' };
     case 'cancel':
       return isInt(v.region) && isProd(v.building) ? { o: 'cancel', region: v.region, building: v.building } : null;
     case 'unbuild':

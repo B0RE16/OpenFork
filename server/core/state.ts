@@ -103,7 +103,7 @@ export type SimEvent =
   | { kind: 'captured'; region: number; by: number; from: number }
   | { kind: 'built'; region: number; owner: number; building: BuildingKind; level: number }
   | { kind: 'produced'; region: number; owner: number; type: UnitType }
-  | { kind: 'eliminated'; player: number; by: number }
+  | { kind: 'eliminated'; player: number; by: number; surrendered?: boolean }
   | { kind: 'won'; player: number };
 
 export interface SimState {

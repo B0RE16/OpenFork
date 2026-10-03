@@ -929,6 +929,19 @@ button.primary:hover:not(:disabled) {
 
 /* -- diplomacy ------------------------------------------------------------------------------ */
 
+.row.center {
+  justify-content: center;
+}
+
+.menu-card {
+  min-width: 280px;
+}
+
+.menu-card p {
+  margin: 0;
+  max-width: 280px;
+}
+
 #confirm {
   position: fixed;
   z-index: 20;

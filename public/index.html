@@ -74,13 +74,25 @@
         <div><b>LMB</b> select · <b>drag</b> box · <b>RMB</b> send · <b>RMB drag</b> pan · <b>wheel</b> zoom</div>
         <div><b>click</b> stack: expand · <b>2×click</b> select stack · <b>X</b> split · <b>G</b> merge · <b>H</b> halt</div>
         <div><b>1-9</b> build: click a region, roads: drag (<b>shift</b> more, <b>esc</b> stop) · <b>Q</b>/<b>E</b> produce</div>
-        <div><b>V</b> supply · <b>Space</b> capital · <b>M</b> mute</div>
+        <div><b>V</b> supply · <b>Space</b> capital · <b>M</b> mute · <b>Esc</b> menu</div>
       </div>
       <div id="over" class="overlay hidden">
         <div class="card">
           <div class="classbar"><span>Flash // End of operations</span></div>
           <h2 id="over-title"></h2>
-          <button id="over-back" class="primary">Back to the lobby</button>
+          <div class="row center">
+            <button id="over-menu">Back to menu</button>
+            <button id="over-back" class="primary">Back to the lobby</button>
+          </div>
+        </div>
+      </div>
+      <div id="menu" class="overlay hidden">
+        <div class="card menu-card">
+          <div class="classbar"><span>Command // Menu</span><span>Esc</span></div>
+          <button id="menu-resume" class="primary">Resume</button>
+          <button id="menu-surrender" class="danger">Surrender</button>
+          <button id="menu-leave">Back to menu</button>
+          <p id="menu-note" class="hint"></p>
         </div>
       </div>
     </main>

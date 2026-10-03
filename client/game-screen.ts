@@ -105,6 +105,48 @@ export class GameScreen {
     $('#feed').replaceChildren();
     $('#feed').classList.add('hidden');
     $('#over-back').onclick = () => this.onBack();
+    $('#over-menu').onclick = () => this.leave();
+    $('#menu').classList.add('hidden');
+    $('#menu-resume').onclick = () => this.toggleMenu(false);
+    $('#menu-surrender').onclick = () => void this.surrender();
+    $('#menu-leave').onclick = () => void this.leaveAsked();
+  }
+
+  /** Still in the game: alive, and it isn't over. */
+  private get playing(): boolean {
+    return !this.finished && this.you !== null && !!this.snap?.players[this.you]?.alive;
+  }
+
+  private toggleMenu(open = $('#menu').classList.contains('hidden')): void {
+    $('#menu').classList.toggle('hidden', !open);
+    if (!open) return;
+    const id = this.you !== null ? this.players[this.you]?.country : '';
+    const country = this.map.countries.find((c) => c.id === id)?.name ?? 'your country';
+    ($('#menu-surrender') as HTMLButtonElement).classList.toggle('hidden', !this.playing);
+    $('#menu-note').textContent = this.playing
+      ? `Leaving hands ${country} to a bot, which plays on. Surrendering ends ${country}: its land goes neutral and its units disband, and you watch the rest.`
+      : 'You are watching. Leaving takes you back to the main menu.';
+  }
+
+  private async surrender(): Promise<void> {
+    this.toggleMenu(false);
+    if (!this.playing) return;
+    const ok = await confirmBox('Surrender', 'Give up? Your land goes neutral and your units disband, as if your capital fell. You can watch the rest of the game.', 'Surrender');
+    if (ok) this.send({ o: 'surrender' });
+  }
+
+  private async leaveAsked(): Promise<void> {
+    this.toggleMenu(false);
+    if (this.playing) {
+      const ok = await confirmBox('Leave the game', 'Back to the main menu? A bot takes over your country and plays on.', 'Leave');
+      if (!ok) return;
+    }
+    this.leave();
+  }
+
+  /** Back to the main menu: leaves the lobby (the server answers with no lobby). */
+  private leave(): void {
+    this.net.send({ t: 'lobby.leave' });
   }
 
   start(): void {
@@ -524,11 +566,16 @@ export class GameScreen {
   private key(e: KeyboardEvent): void {
     const k = e.key.toLowerCase();
     const sel = [...this.selected];
-    if (k === 'escape' && this.placing) {
+    if (k === 'escape' && !$('#menu').classList.contains('hidden')) {
+      this.toggleMenu(false);
+    } else if (k === 'escape' && this.placing) {
       this.setPlacing(null);
-    } else if (k === 'escape') {
+    } else if (k === 'escape' && (this.selected.size || this.region >= 0 || this.view.expanded !== null)) {
       this.selected.clear();
       this.region = -1;
+      this.view.expanded = null;
+    } else if (k === 'escape') {
+      this.toggleMenu(true);
     } else if (k === 'x' && sel.length) {
       for (const id of sel) this.send({ o: 'split', blob: id });
     } else if (k === 'g' && sel.length > 1) {
@@ -841,8 +888,10 @@ export class GameScreen {
     const snap = this.snap;
     if (!snap) return;
     const t = `T+${clock(snap.time)}`;
+    const menu = el('button', { class: 'toggle', title: 'Menu: surrender, leave (Esc)' }, ['Menu']);
+    menu.onclick = () => this.toggleMenu(true);
     if (this.you === null) {
-      $('#topbar').replaceChildren(el('span', { class: 'tag' }, ['[OBSERVER]']), el('span', { class: 'clock' }, [t]));
+      $('#topbar').replaceChildren(el('span', { class: 'tag' }, ['[OBSERVER]']), menu, el('span', { class: 'clock' }, [t]));
       return;
     }
     const p = snap.players[this.you];
@@ -867,7 +916,7 @@ export class GameScreen {
       this.fxChosen = true;
       this.setEffects(this.view.fx.level === 'full' ? 'reduced' : 'full');
     };
-    parts.push(sound, fx);
+    parts.push(sound, fx, menu);
     parts.push(el('span', { class: 'clock' }, [t]));
     $('#topbar').replaceChildren(...parts);
   }
@@ -951,7 +1000,7 @@ export class GameScreen {
         if (e.owner === this.you) text = `${BUILD_LABEL[e.building]}${e.level > 1 ? ` ${e.level}` : ''} finished at ${region(e.region)}`;
         break;
       case 'eliminated':
-        text = `${name(e.player)} knocked out by ${name(e.by)}`;
+        text = e.surrendered ? `${name(e.player)} surrendered` : `${name(e.player)} knocked out by ${name(e.by)}`;
         break;
       case 'war': {
         const target = e.by === e.a ? e.b : e.a;
