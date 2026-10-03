@@ -1322,7 +1322,8 @@ export class MapView {
           const ux = (nx - sx) / d;
           const uy = (ny - sy) / d;
           const st = (FRAME_W * px) / 2 + 3 * px;
-          attackArrow(ctx, sx + ux * st, sy + uy * st, sx + ux * (st + 22 * px), sy + uy * (st + 22 * px), '#9aa3a9', px, 0.6);
+          const rl = 14 * Math.max(2, px);
+          attackArrow(ctx, sx + ux * st, sy + uy * st, sx + ux * (st + rl), sy + uy * (st + rl), '#9aa3a9', Math.max(2, px), 0.6);
         }
         if (it.owner !== you) continue;
       }
@@ -1363,21 +1364,35 @@ export class MapView {
         ctx.globalAlpha = 1;
       }
     }
-    // Attack arrows: from each attacking group toward the middle of the region.
+    // Attack arrows: from each attacking group, pointing the way it attacks (from the border
+    // it crossed toward the middle), even if a crowded screen pushed the group aside.
+    const shown = new Set(items);
+    const ap = Math.max(2, px);
     for (const at of attacks) {
-      if (!at.items.length) continue;
-      const gx = at.items.reduce((sum, it) => sum + it.tx, 0) / at.items.length;
-      const gy = at.items.reduce((sum, it) => sum + it.ty, 0) / at.items.length;
+      const here = at.items.filter((it) => shown.has(it));
+      if (!here.length) continue;
+      const gx = here.reduce((sum, it) => sum + it.tx, 0) / here.length;
+      const gy = here.reduce((sum, it) => sum + it.ty, 0) / here.length;
       const reg = this.map.regions[at.region];
       const [sx, sy] = this.toScreen(gx, gy);
+      const [bx, by] = this.toScreen(...this.borderPoint(at.region, at.side));
       const [ex, ey] = this.toScreen(reg.x, reg.y + 14 / scale);
+      let dx = ex - bx;
+      let dy = ey - by;
+      if (Math.hypot(dx, dy) < 2) {
+        // The border sits on the middle: point away from the side region instead.
+        const from = this.map.regions[at.side];
+        [dx, dy] = [reg.x - from.x, reg.y - from.y];
+      }
+      const d = Math.hypot(dx, dy) || 1;
+      const ux = dx / d;
+      const uy = dy / d;
+      const start = (FRAME_W * px) / 2 + 3 * px;
+      // Most of the way in, but stopping short of the defenders' tokens so it isn't hidden.
       const dist = Math.hypot(ex - sx, ey - sy);
-      if (dist < 26 * px) continue;
-      const ux = (ex - sx) / dist;
-      const uy = (ey - sy) / dist;
-      const start = (FRAME_W * px) / 2 + 4 * px;
-      const len = Math.max(14 * px, Math.min(70 * px, dist * 0.65 - start));
-      attackArrow(ctx, sx + ux * start, sy + uy * start, sx + ux * (start + len), sy + uy * (start + len), colorOf(players, at.owner), px);
+      const left = Math.min(dist * 0.65, dist - (FRAME_W * px) / 2 - 5 * px) - start;
+      const len = Math.max(10 * ap, Math.min(60 * ap, left));
+      attackArrow(ctx, sx + ux * start, sy + uy * start, sx + ux * (start + len), sy + uy * (start + len), colorOf(players, at.owner), ap);
     }
     const blink = Math.floor(now / 300) % 2;
     for (const [wx, wy] of swords) {
@@ -1544,7 +1559,15 @@ export class MapView {
     const gone = new Set<Item>();
     for (const it of onScreen) {
       const host = kept.find(
-        (k) => !k.pinned && !it.pinned && k.owner === it.owner && k.moving === it.moving && Math.abs(k.tx - it.tx) * scale < w * 0.9 && Math.abs(k.ty - it.ty) * scale < h * 0.9,
+        (k) =>
+          !k.pinned &&
+          !it.pinned &&
+          k.owner === it.owner &&
+          k.moving === it.moving &&
+          // An attack never folds into a stack elsewhere (its arrow would go with it).
+          k.group.startsWith('a:') === it.group.startsWith('a:') &&
+          Math.abs(k.tx - it.tx) * scale < w * 0.9 &&
+          Math.abs(k.ty - it.ty) * scale < h * 0.9,
       );
       if (host) {
         host.rows = [...host.rows, ...it.rows].sort((a, b) => b[3] - a[3]);
