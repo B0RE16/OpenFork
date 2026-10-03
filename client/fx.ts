@@ -1,9 +1,9 @@
-// Short-lived visual effects drawn over the map: smoke, flashes, dust, sparks and floating
-// numbers. They live in map coordinates (so they stay put while you pan) and are drawn at
-// the same whole-pixel scale as the unit tokens.
-import { INK, pixelDigits } from './sprites.ts';
+// Short-lived visual effects drawn over the map: smoke, flashes, dust, sparks and tracers.
+// They live in map coordinates (so they stay put while you pan) and are drawn at the same
+// whole-pixel scale as the unit tokens.
+import { INK } from './sprites.ts';
 
-export type FxKind = 'smoke' | 'flash' | 'dust' | 'spark' | 'number' | 'boom' | 'puff' | 'tracer';
+export type FxKind = 'smoke' | 'flash' | 'dust' | 'spark' | 'boom' | 'puff' | 'tracer';
 
 export interface Particle {
   kind: FxKind;
@@ -18,7 +18,6 @@ export interface Particle {
   /** Size in sprite pixels (scaled by the pixel scale). */
   size: number;
   color: string;
-  text?: string;
   /** A tracer's far end (map coordinates). */
   x2?: number;
   y2?: number;
@@ -108,21 +107,6 @@ export class Fx {
             const f = Math.max(0, age - k * 0.05);
             ctx.fillRect(Math.round(x + (ex - x) * f), Math.round(y + (ey - y) * f), s, s);
           }
-          break;
-        }
-        case 'number': {
-          // Losses: a red number rising and fading, with a dark edge.
-          ctx.globalAlpha = 1 - age * age;
-          const scale = Math.max(1, px);
-          for (const [dx, dy] of [
-            [-1, 0],
-            [1, 0],
-            [0, -1],
-            [0, 1],
-          ]) {
-            pixelDigits(ctx, p.text ?? '', x + dx, y + dy, scale, INK);
-          }
-          pixelDigits(ctx, p.text ?? '', x, y, scale, p.color);
           break;
         }
       }

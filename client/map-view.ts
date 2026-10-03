@@ -89,16 +89,14 @@ export class MapView {
   } = { move: null, builds: [] };
   /** Effects under the tokens (smoke, flashes, dust) and over them (loss numbers). */
   readonly fx = new Fx();
-  readonly fxTop = new Fx();
   /** Hooks for sound, set by the game screen. */
   sounds: { gun(volume: number): void; boom(volume: number): void } | null = null;
   /** Hops: where each unit was last drawn and in which region, and glides under way. */
   private lastDrawn = new Map<number, [number, number]>();
   private lastRegion = new Map<number, number>();
   private readonly glides = new Map<number, { x: number; y: number; start: number }>();
-  /** Units hit recently (shake until), and losses not shown yet. */
+  /** Units hit recently (shake until). */
   private readonly shaking = new Map<number, number>();
-  private readonly lossAcc = new Map<number, number>();
   private frameAt = performance.now();
   /** Road tool: the regions dragged across so far, drawn as a dashed line. */
   roadPreview: number[] | null = null;
@@ -1171,7 +1169,7 @@ export class MapView {
     const step = Math.max(FRAME_W * px, PLATE_MIN_W) + 3;
     const sideGap = 14 * px;
     const swords: Array<[number, number]> = [];
-    const attacks: Array<{ owner: number; region: number; side: number; items: Item[] }> = [];
+    const attacks: Array<{ owner: number; region: number; side: number; items: Item[]; swords?: boolean }> = [];
     const slot = (key: string, rows: BlobRow[], owner: number, moving: boolean, group: string, single: boolean) => {
       const pinned = group === this.expanded;
       if (single || pinned || rows.length === 1) return rows.map((b) => ({ key: `b:${b[0]}`, rows: [b], owner, moving, group, pinned }));
@@ -1232,8 +1230,24 @@ export class MapView {
       }
       // Each attacking group on its border.
       const hasMiddle = middle.some((sl) => !sl.moving);
+      // One crossed swords per fight: beside the arrow of the biggest attack on defenders,
+      // or between two warring groups over land nobody here holds.
+      let fight: [number, number] | null = null;
+      let biggest: (typeof attacks)[number] | null = null;
+      let fightBy = 0;
       for (const g of attackers.values()) {
-        const [bx, by] = this.borderPoint(region, g.side);
+        let [bx, by] = this.borderPoint(region, g.side);
+        // A small region on screen: stand further back on the line of attack, so the arrow
+        // fits between the attackers and the middle.
+        const [mx, my] = [reg.x, reg.y + 14 / scale];
+        const need = (FRAME_W * px + 12 * px + (ARROW_LEN - 4) * px) / scale;
+        if (Math.hypot(bx - mx, by - my) < need) {
+          const from = this.map.regions[g.side];
+          let [dx, dy] = [bx - mx, by - my];
+          if (Math.hypot(dx, dy) < 1 / scale) [dx, dy] = [from.x - reg.x, from.y - reg.y];
+          const d = Math.hypot(dx, dy) || 1;
+          [bx, by] = [mx + (dx / d) * need, my + (dy / d) * need];
+        }
         const group = `a:${g.owner}:${region}:${g.side}`;
         const slots = slot(group, g.rows, g.owner, false, group, single);
         const w = slots.length * step;
@@ -1243,21 +1257,23 @@ export class MapView {
           items.push(it);
           made.push(it);
         });
-        attacks.push({ owner: g.owner, region, side: g.side, items: made });
-        // Crossed swords halfway between the attackers and the defenders they're fighting.
+        const at = { owner: g.owner, region, side: g.side, items: made };
+        attacks.push(at);
         const defended = middle.some((sl) => !sl.moving && atWar(sl.owner, g.owner));
-        if (hasMiddle && defended) swords.push([(bx + reg.x) / 2, (by + reg.y + 14 / scale) / 2]);
+        if (hasMiddle && defended && g.rows.length > fightBy) [fightBy, biggest] = [g.rows.length, at];
       }
+      if (biggest) biggest.swords = true;
       // Fights over land nobody here holds: swords between two warring border groups.
       const groups = [...attackers.values()];
-      for (let i = 0; i < groups.length; i++) {
-        for (let j = i + 1; j < groups.length; j++) {
+      for (let i = 0; i < groups.length && !fight && !biggest; i++) {
+        for (let j = i + 1; j < groups.length && !fight; j++) {
           if (!atWar(groups[i].owner, groups[j].owner)) continue;
           const [ax, ay] = this.borderPoint(region, groups[i].side);
           const [cx, cy] = this.borderPoint(region, groups[j].side);
-          swords.push([(ax + cx) / 2, (ay + cy) / 2]);
+          fight = [(ax + cx) / 2, (ay + cy) / 2];
         }
       }
+      if (fight) swords.push(this.toScreen(...fight));
     }
 
     this.declutter(items, step, FRAME_H * px + 4 * px + plateHeight(px));
@@ -1321,9 +1337,8 @@ export class MapView {
         if (d > 4 * px) {
           const ux = (nx - sx) / d;
           const uy = (ny - sy) / d;
-          const st = (FRAME_W * px) / 2 + 3 * px;
-          const rl = 14 * Math.max(2, px);
-          attackArrow(ctx, sx + ux * st, sy + uy * st, sx + ux * (st + rl), sy + uy * (st + rl), '#9aa3a9', Math.max(2, px), 0.6);
+          const st = (FRAME_W * px) / 2 + 2 * px;
+          drawArrow(ctx, sx + ux * st, sy + uy * st, ux, uy, '#9aa3a9', px, 0.75);
         }
         if (it.owner !== you) continue;
       }
@@ -1367,7 +1382,6 @@ export class MapView {
     // Attack arrows: from each attacking group, pointing the way it attacks (from the border
     // it crossed toward the middle), even if a crowded screen pushed the group aside.
     const shown = new Set(items);
-    const ap = Math.max(2, px);
     for (const at of attacks) {
       const here = at.items.filter((it) => shown.has(it));
       if (!here.length) continue;
@@ -1387,16 +1401,19 @@ export class MapView {
       const d = Math.hypot(dx, dy) || 1;
       const ux = dx / d;
       const uy = dy / d;
-      const start = (FRAME_W * px) / 2 + 3 * px;
-      // Most of the way in, but stopping short of the defenders' tokens so it isn't hidden.
-      const dist = Math.hypot(ex - sx, ey - sy);
-      const left = Math.min(dist * 0.65, dist - (FRAME_W * px) / 2 - 5 * px) - start;
-      const len = Math.max(10 * ap, Math.min(60 * ap, left));
-      attackArrow(ctx, sx + ux * start, sy + uy * start, sx + ux * (start + len), sy + uy * (start + len), colorOf(players, at.owner), ap);
+      // The tail tucks under the group; the head points at the middle.
+      const start = (FRAME_W * px) / 2 - 3 * px;
+      drawArrow(ctx, sx + ux * start, sy + uy * start, ux, uy, colorOf(players, at.owner), px);
+      if (at.swords) {
+        // Beside the arrow's middle, on its upper side, clear of the shaft.
+        const [nx, ny] = ux >= 0 ? [uy, -ux] : [-uy, ux];
+        const mid = start + (ARROW_LEN * px) / 2;
+        const off = 13 * px;
+        swords.push([sx + ux * mid + nx * off, sy + uy * mid + ny * off]);
+      }
     }
     const blink = Math.floor(now / 300) % 2;
-    for (const [wx, wy] of swords) {
-      const [x, y] = this.toScreen(wx, wy);
+    for (const [x, y] of swords) {
       blitCentred(ctx, ICONS.swords[blink], Math.round(x), Math.round(y), px);
     }
 
@@ -1416,17 +1433,15 @@ export class MapView {
       placed.push(p);
     }
     this.placed = placed;
-    this.fxTop.draw(ctx, toScreen, px, now);
   }
 
   /** When each fight on screen fires its next artillery round. */
   private readonly nextBoom = new Map<number, number>();
 
-  /** Fights on screen: a pulsing red ring, tracers, muzzle flashes, smoke and artillery. */
+  /** Fights on screen: tracers, muzzle flashes, smoke and artillery. */
   private battleEffects(snap: Snapshot, items: Item[], now: number, px: number): void {
     const dt = Math.min(100, now - this.frameAt) / 1000;
     this.frameAt = now;
-    const ctx = this.ctx;
     const scale = this.cam.scale;
     const atWar = (a: number, b: number) => snap.wars.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
     const byRegion = new Map<number, Item[]>();
@@ -1454,28 +1469,6 @@ export class MapView {
       const cx = (minX + maxX) / 2;
       if (cx < -80 || cy < -80 || cx > cw + 80 || cy > chh + 80) continue;
       fights++;
-
-      // The command layer: a red ring pulsing out around the fight.
-      const pulse = (now % 1200) / 1200;
-      const rx = (maxX - minX) / 2 + 18 * px + pulse * 8 * px;
-      const ry = (maxY - minY) / 2 + 16 * px + pulse * 5 * px;
-      const dot = px + 1;
-      const n = Math.max(48, Math.round((Math.PI * (rx + ry)) / dot));
-      // A steady inner ring, and one pulsing out from it.
-      for (const [k0, a0, grow] of [
-        [0, 0.55, 0],
-        [1, 0.75 * (1 - pulse), 1],
-      ] as const) {
-        ctx.globalAlpha = a0;
-        ctx.fillStyle = k0 ? '#ff5a5a' : '#c0392b';
-        const ex = grow ? rx : rx - pulse * 8 * px;
-        const ey = grow ? ry : ry - pulse * 5 * px;
-        for (let k = 0; k < n; k++) {
-          const a = (k / n) * Math.PI * 2;
-          ctx.fillRect(Math.round(cx + Math.cos(a) * ex - dot / 2), Math.round(cy + Math.sin(a) * ey - dot / 2), dot, dot);
-        }
-      }
-      ctx.globalAlpha = 1;
 
       // Tracers between the sides, muzzle flashes and gun smoke.
       if (Math.random() < dt / 0.25) {
@@ -1512,33 +1505,17 @@ export class MapView {
     if (fights && Math.random() < dt * Math.min(6, 2 * fights)) this.sounds?.gun(Math.min(1, 0.35 + 0.1 * fights) * Math.min(1, scale / 1.5));
   }
 
-  /** Losses since the last snapshot: shake the unit, and float a red number once they add up. */
+  /** Losses since the last snapshot: the unit shakes. */
   noteLosses(prev: Snapshot, next: Snapshot): void {
     const before = new Map(prev.blobs.map((b) => [b[0], b[3]]));
-    const fighting = new Set<number>();
     const owners = new Map<number, Set<number>>();
     for (const b of next.blobs) if (b[8] === 0) owners.set(b[6], (owners.get(b[6]) ?? new Set()).add(b[1]));
-    for (const [r, o] of owners) if (o.size > 1) fighting.add(r);
     const now = performance.now();
-    const px = this.pixel();
     for (const b of next.blobs) {
       const was = before.get(b[0]);
-      if (was === undefined || !fighting.has(b[6])) continue;
-      const lost = was - b[3];
-      if (lost <= 0) continue;
-      const acc = (this.lossAcc.get(b[0]) ?? 0) + lost;
+      if (was === undefined || (owners.get(b[6])?.size ?? 0) < 2 || was - b[3] <= 0) continue;
       this.shaking.set(b[0], now + 300);
-      if (acc < 1) {
-        this.lossAcc.set(b[0], acc);
-        continue;
-      }
-      this.lossAcc.set(b[0], acc - Math.floor(acc));
-      const at = this.lastDrawn.get(b[0]);
-      if (!at) continue;
-      const up = ((FRAME_H * px) / 2 + 6 * px) / this.cam.scale;
-      this.fxTop.add({ kind: 'number', text: `-${Math.floor(acc)}`, x: at[0] + (Math.random() - 0.5) * 6 / this.cam.scale, y: at[1] - up, vx: 0, vy: -14 / this.cam.scale, life: 1100, size: 1, color: '#ff5a5a' });
     }
-    for (const id of [...this.lossAcc.keys()]) if (!next.blobs.some((b) => b[0] === id)) this.lossAcc.delete(id);
   }
 
   /**
@@ -1956,32 +1933,86 @@ function brackets(ctx: CanvasRenderingContext2D, x: number, y: number, half: num
   }
 }
 
+/** The attack arrow, in sprite cells: its length, the head's length and half-width. */
+const ARROW_LEN = 26;
+const ARROW_HEAD = 10;
+const ARROW_DIRS = 32;
+const arrowCache = new Map<string, { c: HTMLCanvasElement; ax: number; ay: number }>();
+
+/** Is (x, y), in the arrow's own frame (tail at the origin, pointing along +x), inside it? */
+function inArrow(x: number, y: number): boolean {
+  if (x < 0 || x > ARROW_LEN) return false;
+  const neck = ARROW_LEN - ARROW_HEAD;
+  if (x >= neck) return Math.abs(y) <= 7.5 * ((ARROW_LEN - x) / ARROW_HEAD);
+  // The shaft widens a little toward the head; the tail has a swallowtail notch.
+  const half = 2.5 + x / neck;
+  return Math.abs(y) <= half && x >= 2 * (1 - Math.abs(y) / half);
+}
+
 /**
- * A thick pixel arrow (shaft, then a head) from (x0, y0) to its tip at (x1, y1): squares
- * stamped along the line, a dark outline first, then the colour, then a lighter spine.
+ * One HOI4-style arrow, rasterised once per direction (32 of them) and colour, in sprite
+ * cells so its pixels stay square: an outline, a body lit on top and shaded underneath, and
+ * a soft drop shadow. `ax, ay` is where the tail sits in the sprite.
  */
-function attackArrow(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string, px: number, alpha = 1): void {
-  const len = Math.hypot(x1 - x0, y1 - y0);
-  if (len < 1) return;
-  const ux = (x1 - x0) / len;
-  const uy = (y1 - y0) / len;
-  const head = Math.min(len * 0.45, 9 * px);
-  const width = (d: number) => (d < len - head ? 3 * px : Math.max(px, 8 * px * ((len - d) / head)));
-  ctx.globalAlpha = alpha;
-  for (const [pad, fill] of [
-    [px, INK],
-    [0, color],
-  ] as const) {
-    ctx.fillStyle = fill;
-    for (let d = 0; d <= len; d += Math.max(1, px / 2)) {
-      const w = width(d) + pad * 2;
-      ctx.fillRect(Math.round(x0 + ux * d - w / 2), Math.round(y0 + uy * d - w / 2), Math.round(w), Math.round(w));
+function arrowSprite(dir: number, color: string): { c: HTMLCanvasElement; ax: number; ay: number } {
+  const key = `${dir}|${color}`;
+  let hit = arrowCache.get(key);
+  if (hit) return hit;
+  const a = (dir / ARROW_DIRS) * Math.PI * 2;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  const pad = 3;
+  const r = ARROW_LEN + 2;
+  const n = r * 2 + pad * 2;
+  const o = r + pad;
+  // Cell centres, turned back into the arrow's frame.
+  const fill = new Uint8Array(n * n);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const dx = x + 0.5 - o;
+      const dy = y + 0.5 - o;
+      if (inArrow(dx * cos + dy * sin, -dx * sin + dy * cos)) fill[y * n + x] = 1;
     }
   }
-  ctx.fillStyle = shade(color, 1.35);
-  for (let d = 0; d < len - head; d += Math.max(1, px / 2)) {
-    ctx.fillRect(Math.round(x0 + ux * d - px / 2), Math.round(y0 + uy * d - px / 2), px, px);
+  const at = (x: number, y: number) => x >= 0 && y >= 0 && x < n && y < n && fill[y * n + x] === 1;
+  const c = document.createElement('canvas');
+  c.width = n;
+  c.height = n;
+  const ctx = c.getContext('2d') as CanvasRenderingContext2D;
+  // The shadow (shape and outline, down and right), then the outline, then the body.
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (at(x - 2, y - 2) || at(x - 1, y - 2) || at(x - 2, y - 1)) ctx.fillRect(x, y, 1, 1);
+  ctx.fillStyle = INK;
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      if (at(x, y)) continue;
+      if (at(x - 1, y) || at(x + 1, y) || at(x, y - 1) || at(x, y + 1)) {
+        ctx.clearRect(x, y, 1, 1);
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
   }
+  const light = shade(color, 1.4);
+  const dark = shade(color, 0.7);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      if (!at(x, y)) continue;
+      ctx.clearRect(x, y, 1, 1);
+      ctx.fillStyle = !at(x, y - 1) ? light : !at(x, y + 1) ? dark : color;
+      ctx.fillRect(x, y, 1, 1);
+    }
+  }
+  hit = { c, ax: o, ay: o };
+  arrowCache.set(key, hit);
+  return hit;
+}
+
+/** Draws the attack arrow with its tail at (x, y), pointing along (ux, uy), `s` px per cell. */
+function drawArrow(ctx: CanvasRenderingContext2D, x: number, y: number, ux: number, uy: number, color: string, s: number, alpha = 1): void {
+  const dir = ((Math.round((Math.atan2(uy, ux) / (Math.PI * 2)) * ARROW_DIRS) % ARROW_DIRS) + ARROW_DIRS) % ARROW_DIRS;
+  const { c, ax, ay } = arrowSprite(dir, color);
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(c, Math.round(x - ax * s), Math.round(y - ay * s), c.width * s, c.height * s);
   ctx.globalAlpha = 1;
 }
 

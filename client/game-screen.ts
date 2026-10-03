@@ -559,7 +559,6 @@ export class GameScreen {
 
   private setEffects(level: 'full' | 'reduced'): void {
     this.view.fx.level = level;
-    this.view.fxTop.level = level;
     this.renderTopbar();
   }
 
