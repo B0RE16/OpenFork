@@ -1398,7 +1398,7 @@ export class MapView {
       if (at.swords) {
         // Beside the arrow, on its upper side, clear of the head.
         const [nx, ny] = ux >= 0 ? [uy, -ux] : [-uy, ux];
-        const off = 11 * px;
+        const off = 13 * px;
         swords.push([bx + nx * off, by + ny * off]);
       }
     }
@@ -1929,17 +1929,21 @@ function brackets(ctx: CanvasRenderingContext2D, x: number, y: number, half: num
  * the same pixels.
  */
 const ARROW_ROWS = [
-  '...........O.....',
-  '...........OO....',
-  '...........OLO...',
-  'OOOOOOOOOOOOLLO..',
-  'OLLLLLLLLLLLLCCO.',
-  'OCCCCCCCCCCCCCCCO',
-  'ODDDDDDDDDDDDDDO.',
-  'OOOOOOOOOOOODDO..',
-  '...........ODO...',
-  '...........OO....',
-  '...........O.....',
+  '.................O.......',
+  '................OLO......',
+  '................OCLO.....',
+  '................OCCLO....',
+  '.OOOOOOOOOOOOOOOOCCCLO...',
+  'OLLLLLLLLLLLLLLLLCCCCLO..',
+  'OCCCCCCCCCCCCCCCCCCCCCLO.',
+  'OCCCCCCCCCCCCCCCCCCCCCCLO',
+  'OCCCCCCCCCCCCCCCCCCCCCDO.',
+  'ODDDDDDDDDDDDDDDDCCCCDO..',
+  '.OOOOOOOOOOOOOOOOCCCDO...',
+  '................OCCDO....',
+  '................OCDO.....',
+  '................ODO......',
+  '.................O.......',
 ];
 const ARROW_LEN = ARROW_ROWS[0].length;
 const arrowCache = new Map<string, HTMLCanvasElement>();
