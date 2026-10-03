@@ -112,7 +112,7 @@ export class Game {
       case 'stop':
         return s.stop(id, order.blobs);
       case 'split':
-        return s.split(id, order.blob);
+        return s.split(id, order.blob, order.amount);
       case 'merge':
         return s.merge(id, order.blobs);
       case 'build':

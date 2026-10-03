@@ -96,13 +96,18 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
     up to a cap.
   - **Effect:** more damage dealt, less damage taken, faster capture.
 - **Merging and splitting:**
-  - Only same-type blobs merge. The merged blob's training is the size-weighted average minus
-    a penalty, and its strength stops at the type cap.
-  - Splitting is free; both halves keep their training.
+  - Only same-type blobs merge, in any amounts (a 5 and a 10 make a 15). The merged blob's
+    training is the size-weighted average minus a penalty, and it stops at 100 strength
+    (the rest stays behind).
+  - Splitting is free and takes any amount: half (X), one batch, or a number typed in the
+    unit panel. Both parts keep their training.
+  - Bots keep units around two batches, and merge bigger only when a region is full.
 - **Refill:** a damaged blob in supply slowly refills, paying manpower (plus steel for tanks).
 - **Stack cap:** each region holds a limited number of tokens per player. The cap depends on
-  region size and terrain and goes up by 1 per fort level and per city level. Units only passing through their
-  own land don't count; without that, armies jam behind the front.
+  region size and terrain and goes up by 1 per fort level and per city level. **Every token
+  counts:** standing, leaving, or waiting at the edge of the next region. A route that meets
+  a full region waits on its border; two full regions swapping units trade places, so they
+  can't jam each other. Merge to make room.
 
 ## 5. Movement
 - **RTS controls:** click or box-select blobs, right-click a region to send them, and use keys
@@ -193,8 +198,8 @@ going their way. A bot playing for a disconnected person never starts a war.
 | Thing | Start value |
 |---|---|
 | Server tick | 10/s |
-| Infantry: max strength / speed / attack / defense | 20 / 1.0 / 1.0 / 1.2 |
-| Tanks: max strength / speed / attack / defense | 10 / 1.8 / 2.5 / 1.5 |
+| Infantry: max strength / speed / attack / defense | 100 / 1.0 / 1.0 / 1.2 |
+| Tanks: max strength / speed / attack / defense | 100 / 1.8 / 2.5 / 1.5 |
 | Crossing one plains region (speed 1.0) | 5.5 s |
 | Terrain move ×: plains / forest / hills / mountains | 1 / 0.7 / 0.6 / 0.4 |
 | Tank attack ×: plains / forest / hills / mountains | 1.2 / 0.6 / 0.7 / 0.4 |

@@ -23,7 +23,8 @@ function order(v: unknown): Order | null {
     case 'stop':
       return isIds(v.blobs) ? { o: 'stop', blobs: v.blobs } : null;
     case 'split':
-      return isInt(v.blob) ? { o: 'split', blob: v.blob } : null;
+      if (!isInt(v.blob) || (v.amount !== undefined && (!isInt(v.amount) || (v.amount as number) < 1))) return null;
+      return { o: 'split', blob: v.blob, ...(v.amount !== undefined ? { amount: v.amount as number } : {}) };
     case 'merge':
       return isIds(v.blobs) ? { o: 'merge', blobs: v.blobs } : null;
     case 'build':

@@ -982,6 +982,8 @@ export class GameScreen {
     const panel = $('#panel');
     const snap = this.snap;
     if (!snap) return;
+    // Typing a split amount: leave the panel alone until the field loses focus.
+    if (document.activeElement?.id === 'split-amount' && panel.contains(document.activeElement)) return;
     const sel = [...this.selected].map((id) => this.blob(id)).filter((b): b is BlobRow => !!b);
     if (sel.length) {
       panel.replaceChildren(...this.unitsPanel(sel));
@@ -1030,7 +1032,34 @@ export class GameScreen {
         btn('Merge (G)', () => this.mergeSelected(), 'Same type, same region; costs some training'),
         btn('Halt (H)', () => this.send({ o: 'stop', blobs: sel.map((b) => b[0]) })),
       ]),
+      ...this.splitRow(sel, btn),
       ...sel.slice(0, 30).map((b) => this.unitRow(b, true)),
+    ];
+  }
+
+  /** One unit standing still: split off a batch, half, or any amount. */
+  private splitRow(sel: BlobRow[], btn: (label: string, fn: () => void, title?: string) => HTMLElement): HTMLElement[] {
+    if (sel.length !== 1 || sel[0][8] > 0 || sel[0][4] < 2) return [];
+    const b = sel[0];
+    const size = b[4];
+    const batch = UNITS[UNIT_INDEX[b[2]]].batch;
+    const split = (amount: number) => this.send({ o: 'split', blob: b[0], amount: Math.max(1, Math.min(size - 1, Math.floor(amount))) });
+    const field = el('input', { id: 'split-amount', type: 'number', min: '1', max: String(size - 1), value: String(Math.min(batch, size - 1)) }) as HTMLInputElement;
+    field.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        split(Number(field.value));
+        field.blur();
+        this.renderPanel();
+      } else if (e.key === 'Escape') field.blur();
+    };
+    return [
+      el('div', { class: 'buttons split' }, [
+        el('span', { class: 'label' }, ['Split off']),
+        ...(size > batch ? [btn(String(batch), () => split(batch), `Split off one batch (${batch})`)] : []),
+        btn('½', () => split(size / 2), 'Split off half'),
+        field,
+        btn('Split', () => split(Number(field.value)), 'Split off this many'),
+      ]),
     ];
   }
 
@@ -1045,7 +1074,8 @@ export class GameScreen {
       el('div', { class: 'sub' }, [`${country} · ${region.terrain} · ${region.size}${region.traits.length ? ` · ${region.traits.join(', ')}` : ''}`]),
     ];
     const here = snap.blobs.filter((b) => b[6] === region.id && b[8] === 0);
-    const myCount = here.filter((b) => b[1] === this.you).length;
+    // The stack cap counts every token in the region, moving out or waiting included.
+    const myCount = snap.blobs.filter((b) => b[6] === region.id && b[1] === this.you).length;
     const used = rr[9] + rr[10] + rr[11] + rr[12] + (rr[1] > 0 ? 1 : 0) + (rr[3] & 1 ? 1 : 0) + (rr[3] & 2 ? 1 : 0);
     const info: Array<[string, string]> = [
       ['Owner', owner >= 0 ? (this.players[owner]?.name ?? '?') : 'Neutral'],

@@ -499,8 +499,21 @@ export class Bot {
       groups.set(k, [...(groups.get(k) ?? []), b]);
     }
     for (const list of groups.values()) {
-      const small = list.filter((b) => b.size < UNITS[b.type].maxSize).sort((a, b) => b.size - a.size);
-      if (small.length >= 2) sim.merge(this.player, small.map((b) => b.id));
+      // Units of about two batches, enough of them to spread out; bigger only when the
+      // region is full and merging makes room.
+      const { region, type } = list[0];
+      const crowded = sim.count(this.player, region) >= sim.stackCap(region);
+      const target = crowded ? UNITS[type].maxSize : 2 * UNITS[type].batch;
+      const small = list.filter((b) => b.size < target).sort((a, b) => b.size - a.size);
+      if (small.length < 2) continue;
+      const ids = [small[0].id];
+      let sum = small[0].size;
+      for (const b of small.slice(1)) {
+        if (sum + b.size > target) continue;
+        ids.push(b.id);
+        sum += b.size;
+      }
+      if (ids.length >= 2) sim.merge(this.player, ids);
     }
   }
 

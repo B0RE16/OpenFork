@@ -213,9 +213,13 @@ export class Sim {
     return [...(this.standing().get(region) ?? [])];
   }
 
+  /**
+   * An owner's tokens in a region, for the stack cap: every one, standing, leaving or
+   * waiting at the edge of the next region.
+   */
   count(owner: number, region: number): number {
     let n = 0;
-    for (const b of this.standing().get(region) ?? []) if (b.owner === owner) n++;
+    for (const b of this.state.blobs.values()) if (b.owner === owner && b.region === region) n++;
     return n;
   }
 
@@ -458,14 +462,15 @@ export class Sim {
     return null;
   }
 
-  split(playerId: number, blobId: number): string | null {
+  /** Splits `amount` off a unit (half if not given), kept between 1 and its size − 1. */
+  split(playerId: number, blobId: number, amount?: number): string | null {
     const blobs = this.own(playerId, [blobId]);
     if (typeof blobs === 'string') return blobs;
     const [b] = blobs;
     if (b.progress > 0) return 'units on the move can\'t split';
     if (b.size < 2) return 'too small to split';
     if (this.count(b.owner, b.region) >= this.stackCap(b.region)) return 'no room in this region';
-    const half = Math.floor(b.size / 2);
+    const half = Math.max(1, Math.min(b.size - 1, Math.floor(amount ?? b.size / 2)));
     const share = half / b.size;
     const other = this.spawn(b.owner, b.type, b.region);
     other.size = half;
@@ -489,6 +494,7 @@ export class Sim {
       if (b.region !== into.region || b.progress > 0 || into.progress > 0) return 'units must be in the same region';
     }
     const max = UNITS[into.type].maxSize;
+    if (into.size >= max) return 'already full';
     for (const b of rest) {
       const room = max - into.size;
       if (room <= 0) break;
@@ -807,8 +813,6 @@ export class Sim {
 
   private arrive(b: Blob): void {
     const to = b.path[0];
-    const edge = this.world.edge(b.region, to);
-    const rs = this.state.regions[to];
     if (this.closedTo(b.owner, to)) {
       // Peace was made on the way: stay out of their land.
       b.path = [];
@@ -816,10 +820,28 @@ export class Sim {
       this.touch();
       return;
     }
+    // A full region: wait at its edge until there's room. If one of our units there is
+    // waiting to come this way, the two swap places (so full regions can't jam each other).
+    if (this.count(b.owner, to) >= this.stackCap(to)) {
+      let other: Blob | undefined;
+      for (const o of this.state.blobs.values()) {
+        if (o !== b && o.owner === b.owner && o.region === to && o.progress >= 1 && o.path[0] === b.region) {
+          other = o;
+          break;
+        }
+      }
+      if (!other) return;
+      this.enter(other);
+    }
+    this.enter(b);
+  }
+
+  /** Moves a unit that reached the end of its hop into the next region. */
+  private enter(b: Blob): void {
+    const to = b.path[0];
+    const edge = this.world.edge(b.region, to);
+    const rs = this.state.regions[to];
     const hostile = this.hostileIn(to, b.owner);
-    // A full region: wait at its edge until there's room, unless just passing through own land.
-    const passing = b.path.length > 1 && rs.owner === b.owner && !hostile;
-    if (!passing && this.count(b.owner, to) >= this.stackCap(to)) return;
     b.path.shift();
     b.from = b.region;
     b.region = to;

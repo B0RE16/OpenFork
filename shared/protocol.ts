@@ -13,7 +13,7 @@ import { BUILDING_KINDS } from './rules.ts';
 export type Order =
   | { o: 'move'; blobs: number[]; to: number }
   | { o: 'stop'; blobs: number[] }
-  | { o: 'split'; blob: number }
+  | { o: 'split'; blob: number; amount?: number }
   | { o: 'merge'; blobs: number[] }
   /** `target`: a road's other region. */
   | { o: 'build'; region: number; kind: BuildingKind; target?: number }

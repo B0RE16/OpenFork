@@ -13,7 +13,7 @@ import {
   supplyReach,
   UNITS,
 } from '../shared/rules.ts';
-import { NEUTRAL } from '../server/core/state.ts';
+import { type Blob, NEUTRAL } from '../server/core/state.ts';
 import { chain, clearBlobs, makeMap, place, rich, run, sim } from './helpers.ts';
 
 /** A: capital 0; B: capital 7; a chain of 8 plains regions in between. */
@@ -108,6 +108,52 @@ describe('movement', () => {
     run(s, CROSS_SECONDS * 2);
     assert.equal(late.region, 0);
     assert.equal(late.progress, 1);
+  });
+
+  it('every token counts toward the cap: passing through a full region of your own waits too', () => {
+    const s = duel();
+    clearBlobs(s);
+    for (const r of [1, 2]) s.state.regions[r].owner = 0;
+    const cap = s.stackCap(1);
+    for (let i = 0; i < cap; i++) place(s, 0, 'infantry', 1);
+    const late = place(s, 0, 'infantry', 0);
+    s.move(0, [late.id], 2);
+    run(s, CROSS_SECONDS * 3);
+    assert.equal(late.region, 0, 'no slipping through a full region');
+    // Waiting at the edge, it still takes a place where it is.
+    assert.equal(s.count(0, 0), 1);
+  });
+
+  it('a unit waiting to leave still counts, so the region has no room for more', () => {
+    const s = duel();
+    clearBlobs(s);
+    s.state.regions[1].owner = 0;
+    s.state.regions[2].owner = 0;
+    const cap = s.stackCap(2);
+    for (let i = 0; i < cap; i++) place(s, 0, 'infantry', 2);
+    for (let i = 0; i < s.stackCap(1); i++) place(s, 0, 'infantry', 1);
+    const [leaving, other] = [...s.state.blobs.values()].filter((b) => b.region === 1);
+    s.move(0, [leaving.id], 2);
+    run(s, CROSS_SECONDS * 2);
+    assert.equal(leaving.region, 1);
+    assert.equal(leaving.progress, 1);
+    assert.match(s.split(0, other.id) ?? '', /no room/);
+  });
+
+  it('full regions swapping units do not jam', () => {
+    const s = duel();
+    clearBlobs(s);
+    s.state.regions[1].owner = 0;
+    s.state.regions[2].owner = 0;
+    for (let i = 0; i < s.stackCap(1); i++) place(s, 0, 'infantry', 1);
+    for (let i = 0; i < s.stackCap(2); i++) place(s, 0, 'infantry', 2);
+    const a = [...s.state.blobs.values()].find((b) => b.region === 1) as Blob;
+    const b = [...s.state.blobs.values()].find((x) => x.region === 2) as Blob;
+    s.move(0, [a.id], 2);
+    s.move(0, [b.id], 1);
+    run(s, CROSS_SECONDS * 2);
+    assert.equal(a.region, 2);
+    assert.equal(b.region, 1);
   });
 });
 
@@ -233,11 +279,17 @@ describe('training, digging in, merging', () => {
     a.training = 40;
     b.training = 20;
     assert.equal(s.merge(0, [a.id, b.id]), null);
-    assert.equal(a.size, UNITS.infantry.maxSize);
-    assert.ok(s.state.blobs.has(b.id), 'the rest stays behind');
-    assert.equal(b.size, 5);
-    const expected = (40 * 10 + 20 * 10) / 20 - MERGE_PENALTY;
+    assert.equal(a.size, 25);
+    assert.ok(!s.state.blobs.has(b.id), 'uneven units merge whole');
+    const expected = (40 * 10 + 20 * 15) / 25 - MERGE_PENALTY;
     assert.ok(Math.abs(a.training - expected) < 1e-9);
+    // Up to the cap, the rest stays behind; a full unit takes no more.
+    const big = place(s, 0, 'infantry', 0, 95);
+    const c = place(s, 0, 'infantry', 0, 10);
+    assert.equal(s.merge(0, [big.id, c.id]), null);
+    assert.equal(big.size, UNITS.infantry.maxSize);
+    assert.equal(c.size, 5);
+    assert.match(s.merge(0, [big.id, c.id]) ?? '', /already full/);
   });
 
   it('only same-type blobs merge; split halves keep their training', () => {
@@ -256,6 +308,16 @@ describe('training, digging in, merging', () => {
       [5, 5],
     );
     assert.ok(parts.every((p) => p.training === 30));
+  });
+
+  it('splits off any amount, kept between 1 and the size less one', () => {
+    const s = duel();
+    clearBlobs(s);
+    const a = place(s, 0, 'infantry', 0);
+    assert.equal(s.split(0, a.id, 3), null);
+    assert.deepEqual([...s.state.blobs.values()].map((p) => p.size), [7, 3]);
+    assert.equal(s.split(0, a.id, 50), null);
+    assert.deepEqual([...s.state.blobs.values()].map((p) => p.size), [1, 3, 6]);
   });
 });
 

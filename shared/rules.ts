@@ -46,7 +46,7 @@ export interface UnitStats {
 
 export const UNITS: Record<UnitType, UnitStats> = {
   infantry: {
-    maxSize: 20,
+    maxSize: 100,
     batch: 10,
     speed: 1,
     attack: 1,
@@ -60,7 +60,7 @@ export const UNITS: Record<UnitType, UnitStats> = {
     producedAt: 'barracks',
   },
   tank: {
-    maxSize: 10,
+    maxSize: 100,
     batch: 5,
     speed: 1.8,
     attack: 2.5,
