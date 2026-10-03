@@ -10,6 +10,8 @@ import { World } from './world.ts';
 
 /** Lobbies with nobody connected are closed after this long. */
 const EMPTY_LOBBY_MS = 10 * 60_000;
+/** A running game nobody is playing or watching for this long ends (no point bots playing to nobody). */
+const ABANDONED_GAME_MS = 30_000;
 /** People in one lobby (players and watchers). */
 const MAX_MEMBERS = 16;
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -370,6 +372,11 @@ export class GameServer {
       }
       const game = lobby.game;
       if (!game || game.over) continue;
+      if (lobby.emptySince !== null && now - lobby.emptySince > ABANDONED_GAME_MS) {
+        game.end();
+        this.finish(lobby, game);
+        continue;
+      }
       game.tick();
       lobby.ticks++;
       if (lobby.ticks % SNAPSHOT_EVERY_TICKS !== 0 && !game.over && !lobby.urgent) continue;

@@ -19,6 +19,10 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
   capitals will win together.
 - **Losing your capital** eliminates you: your land goes neutral and empty, and your blobs
   disband.
+- **Surrender** (Menu / Esc) does the same at once; you watch the rest of the game.
+- **Back to menu** leaves the lobby; in a game you're still alive in, a bot plays your
+  country on. A game nobody is playing or watching (no one connected for 30 s) ends with
+  no winner.
 
 ## 2. Map
 - v1 map: **Europe, modern countries, mainland only, Atlantic to the Urals** (no UK, Ireland,
@@ -96,19 +100,28 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
     up to a cap.
   - **Effect:** more damage dealt, less damage taken, faster capture.
 - **Merging and splitting:**
-  - Only same-type blobs merge. The merged blob's training is the size-weighted average minus
-    a penalty, and its strength stops at the type cap.
-  - Splitting is free; both halves keep their training.
+  - Only same-type blobs merge, in any amounts (a 5 and a 10 make a 15). The merged blob's
+    training is the size-weighted average minus a penalty, and it stops at 100 strength
+    (the rest stays behind).
+  - Splitting is free and takes any amount: half (X), one batch, or a number typed in the
+    unit panel. Both parts keep their training.
+  - Bots keep units around two batches, and merge bigger only when a region is full.
 - **Refill:** a damaged blob in supply slowly refills, paying manpower (plus steel for tanks).
 - **Stack cap:** each region holds a limited number of tokens per player. The cap depends on
-  region size and terrain and goes up by 1 per fort level and per city level. Units only passing through their
-  own land don't count; without that, armies jam behind the front.
+  region size and terrain and goes up by 1 per fort level and per city level. **Every token
+  counts:** standing, leaving, or waiting at the edge of the next region. A route that meets
+  a full region waits on its border; two full regions swapping units trade places, so they
+  can't jam each other. Merge to make room.
 
 ## 5. Movement
 - **RTS controls:** click or box-select blobs, right-click a region to send them, and use keys
   for split, merge and build.
 - **Pathing:** blobs path through any region. Infantry takes about 5.5 s to cross one plains
   region; terrain changes that, and roads make it faster.
+- **Changing orders mid-hop:** a hop is a timer, and the unit stays in its region until it
+  ends. A new order the same way keeps the progress; any other order, or Halt, turns the
+  unit back at once (it never has to step into the next region first). Pulling out of a
+  fight costs once, however often the way out changes.
 - **Zone of control:** crossing enemy-owned land is slower than crossing your own, and forts
   there slow it more. A fort without units in it only slows; it can't stop anything.
 - **Running into enemies:** if an enemy region on the path holds enemy blobs, the blob stops
@@ -118,10 +131,9 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
   training makes it shorter.
 - **How a fight looks:** units in their own region hold the middle (with a shield showing
   their fort level, whether they're dug in, and a river crossed by the attackers); units
-  attacking or taking a region stand on the border they crossed, one group per border,
-  with a big arrow in their colour pointing in (standing further back when the region is
-  small on screen, so the arrow always fits). One crossed swords per fight, beside the
-  main arrow. Borders between countries at war show as two-colour front lines; units
+  attacking or taking a region get an arrow in their colour sitting halfway across the
+  border they crossed, pointing in, one per border; the units stand on their own side
+  just behind its tail. One crossed swords per fight, beside the main arrow. Borders between countries at war show as two-colour front lines; units
   pulling out of a fight get a grey arrow back.
 - **Retreat:** a blob can leave a battle, but only backwards: to the region it came from or
   to a neighbouring region its owner holds, never on past the enemy. It loses strength and
@@ -194,8 +206,8 @@ going their way. A bot playing for a disconnected person never starts a war.
 | Thing | Start value |
 |---|---|
 | Server tick | 10/s |
-| Infantry: max strength / speed / attack / defense | 20 / 1.0 / 1.0 / 1.2 |
-| Tanks: max strength / speed / attack / defense | 10 / 1.8 / 2.5 / 1.5 |
+| Infantry: max strength / speed / attack / defense | 100 / 1.0 / 1.0 / 1.2 |
+| Tanks: max strength / speed / attack / defense | 100 / 1.8 / 2.5 / 1.5 |
 | Crossing one plains region (speed 1.0) | 5.5 s |
 | Terrain move ×: plains / forest / hills / mountains | 1 / 0.7 / 0.6 / 0.4 |
 | Tank attack ×: plains / forest / hills / mountains | 1.2 / 0.6 / 0.7 / 0.4 |

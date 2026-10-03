@@ -213,9 +213,13 @@ export class Sim {
     return [...(this.standing().get(region) ?? [])];
   }
 
+  /**
+   * An owner's tokens in a region, for the stack cap: every one, standing, leaving or
+   * waiting at the edge of the next region.
+   */
   count(owner: number, region: number): number {
     let n = 0;
-    for (const b of this.standing().get(region) ?? []) if (b.owner === owner) n++;
+    for (const b of this.state.blobs.values()) if (b.owner === owner && b.region === region) n++;
     return n;
   }
 
@@ -419,28 +423,31 @@ export class Sim {
     }
     let refused: string | null = null;
     for (const b of blobs) {
-      // Waiting at the edge of a full region: turn back and go from where it came.
-      if (b.progress >= 1) {
-        b.progress = 0;
-        this.touch();
-      }
-      // On the move: finish the current hop, then follow the new route from there.
-      const start = b.progress > 0 ? b.path[0] : b.region;
-      const route = this.route(b.type, b.owner, b.training, start, target);
+      // A unit mid-hop is still in its region (the hop is a timer): a new route the same way
+      // keeps the hop's progress; any other route, or staying, turns it back at once.
+      const route = this.route(b.type, b.owner, b.training, b.region, target);
       if (!route) return 'no route';
-      if (b.progress > 0) {
-        b.path = [b.path[0], ...route];
+      const leaving = b.progress > 0;
+      if (leaving && route.length && route[0] === b.path[0]) {
+        b.path = route;
         continue;
       }
-      if (route.length && this.contested(b.region)) {
+      // Enemies stand here (this unit may be mid-hop, so not counted as standing itself).
+      if (route.length && this.hostileIn(b.region, b.owner)) {
         // In a fight: no slipping past the enemy, only a retreat (back where it came from, or
-        // to its own land), and that costs.
+        // to its own land), and that costs (once: changing the way out is free).
         if (route[0] !== b.from && this.state.regions[route[0]].owner !== b.owner) {
           refused = 'in a fight: units can only retreat to your own land';
           continue;
         }
-        b.strength *= 1 - RETREAT_STRENGTH_LOSS;
-        b.training = Math.max(0, b.training - RETREAT_TRAINING_LOSS);
+        if (!leaving) {
+          b.strength *= 1 - RETREAT_STRENGTH_LOSS;
+          b.training = Math.max(0, b.training - RETREAT_TRAINING_LOSS);
+        }
+      }
+      if (leaving) {
+        b.progress = 0;
+        this.touch();
       }
       b.path = route;
       b.hold = false;
@@ -452,20 +459,24 @@ export class Sim {
     const blobs = this.own(playerId, blobIds);
     if (typeof blobs === 'string') return blobs;
     for (const b of blobs) {
-      b.path = b.progress > 0 ? [b.path[0]] : [];
+      // Halts at once, mid-hop too (the hop is a timer; the unit hasn't left yet).
+      if (b.progress > 0) this.touch();
+      b.path = [];
+      b.progress = 0;
       b.hold = false;
     }
     return null;
   }
 
-  split(playerId: number, blobId: number): string | null {
+  /** Splits `amount` off a unit (half if not given), kept between 1 and its size − 1. */
+  split(playerId: number, blobId: number, amount?: number): string | null {
     const blobs = this.own(playerId, [blobId]);
     if (typeof blobs === 'string') return blobs;
     const [b] = blobs;
     if (b.progress > 0) return 'units on the move can\'t split';
     if (b.size < 2) return 'too small to split';
     if (this.count(b.owner, b.region) >= this.stackCap(b.region)) return 'no room in this region';
-    const half = Math.floor(b.size / 2);
+    const half = Math.max(1, Math.min(b.size - 1, Math.floor(amount ?? b.size / 2)));
     const share = half / b.size;
     const other = this.spawn(b.owner, b.type, b.region);
     other.size = half;
@@ -489,6 +500,7 @@ export class Sim {
       if (b.region !== into.region || b.progress > 0 || into.progress > 0) return 'units must be in the same region';
     }
     const max = UNITS[into.type].maxSize;
+    if (into.size >= max) return 'already full';
     for (const b of rest) {
       const room = max - into.size;
       if (room <= 0) break;
@@ -807,8 +819,6 @@ export class Sim {
 
   private arrive(b: Blob): void {
     const to = b.path[0];
-    const edge = this.world.edge(b.region, to);
-    const rs = this.state.regions[to];
     if (this.closedTo(b.owner, to)) {
       // Peace was made on the way: stay out of their land.
       b.path = [];
@@ -816,10 +826,28 @@ export class Sim {
       this.touch();
       return;
     }
+    // A full region: wait at its edge until there's room. If one of our units there is
+    // waiting to come this way, the two swap places (so full regions can't jam each other).
+    if (this.count(b.owner, to) >= this.stackCap(to)) {
+      let other: Blob | undefined;
+      for (const o of this.state.blobs.values()) {
+        if (o !== b && o.owner === b.owner && o.region === to && o.progress >= 1 && o.path[0] === b.region) {
+          other = o;
+          break;
+        }
+      }
+      if (!other) return;
+      this.enter(other);
+    }
+    this.enter(b);
+  }
+
+  /** Moves a unit that reached the end of its hop into the next region. */
+  private enter(b: Blob): void {
+    const to = b.path[0];
+    const edge = this.world.edge(b.region, to);
+    const rs = this.state.regions[to];
     const hostile = this.hostileIn(to, b.owner);
-    // A full region: wait at its edge until there's room, unless just passing through own land.
-    const passing = b.path.length > 1 && rs.owner === b.owner && !hostile;
-    if (!passing && this.count(b.owner, to) >= this.stackCap(to)) return;
     b.path.shift();
     b.from = b.region;
     b.region = to;
@@ -937,7 +965,16 @@ export class Sim {
     rs.production = { barracks: emptyLine(), factory: emptyLine() };
   }
 
-  private eliminate(playerId: number, by: number): void {
+  /** Gives up: the country goes the way of one whose capital fell. */
+  surrender(playerId: number): string | null {
+    const p = this.state.players[playerId];
+    if (!p?.alive) return 'already out of the game';
+    if (this.state.winner !== null) return 'the game is over';
+    this.eliminate(playerId, playerId, true);
+    return null;
+  }
+
+  private eliminate(playerId: number, by: number, surrendered = false): void {
     const p = this.state.players[playerId];
     p.alive = false;
     this.state.regions.forEach((rs, i) => {
@@ -946,7 +983,7 @@ export class Sim {
     for (const b of [...this.state.blobs.values()]) if (b.owner === playerId) this.remove(b.id);
     for (const key of [...this.state.wars]) if (key.split(':').map(Number).includes(playerId)) this.state.wars.delete(key);
     for (const key of [...this.state.peaceOffers.keys()]) if (key.split('>').map(Number).includes(playerId)) this.state.peaceOffers.delete(key);
-    this.events.push({ kind: 'eliminated', player: playerId, by });
+    this.events.push({ kind: 'eliminated', player: playerId, by, ...(surrendered ? { surrendered } : {}) });
     const alive = this.state.players.filter((x) => x.alive);
     if (alive.length === 1) {
       this.state.winner = alive[0].id;

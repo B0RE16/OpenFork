@@ -105,6 +105,48 @@ export class GameScreen {
     $('#feed').replaceChildren();
     $('#feed').classList.add('hidden');
     $('#over-back').onclick = () => this.onBack();
+    $('#over-menu').onclick = () => this.leave();
+    $('#menu').classList.add('hidden');
+    $('#menu-resume').onclick = () => this.toggleMenu(false);
+    $('#menu-surrender').onclick = () => void this.surrender();
+    $('#menu-leave').onclick = () => void this.leaveAsked();
+  }
+
+  /** Still in the game: alive, and it isn't over. */
+  private get playing(): boolean {
+    return !this.finished && this.you !== null && !!this.snap?.players[this.you]?.alive;
+  }
+
+  private toggleMenu(open = $('#menu').classList.contains('hidden')): void {
+    $('#menu').classList.toggle('hidden', !open);
+    if (!open) return;
+    const id = this.you !== null ? this.players[this.you]?.country : '';
+    const country = this.map.countries.find((c) => c.id === id)?.name ?? 'your country';
+    ($('#menu-surrender') as HTMLButtonElement).classList.toggle('hidden', !this.playing);
+    $('#menu-note').textContent = this.playing
+      ? `Leaving hands ${country} to a bot, which plays on. Surrendering ends ${country}: its land goes neutral and its units disband, and you watch the rest.`
+      : 'You are watching. Leaving takes you back to the main menu.';
+  }
+
+  private async surrender(): Promise<void> {
+    this.toggleMenu(false);
+    if (!this.playing) return;
+    const ok = await confirmBox('Surrender', 'Give up? Your land goes neutral and your units disband, as if your capital fell. You can watch the rest of the game.', 'Surrender');
+    if (ok) this.send({ o: 'surrender' });
+  }
+
+  private async leaveAsked(): Promise<void> {
+    this.toggleMenu(false);
+    if (this.playing) {
+      const ok = await confirmBox('Leave the game', 'Back to the main menu? A bot takes over your country and plays on.', 'Leave');
+      if (!ok) return;
+    }
+    this.leave();
+  }
+
+  /** Back to the main menu: leaves the lobby (the server answers with no lobby). */
+  private leave(): void {
+    this.net.send({ t: 'lobby.leave' });
   }
 
   start(): void {
@@ -524,11 +566,16 @@ export class GameScreen {
   private key(e: KeyboardEvent): void {
     const k = e.key.toLowerCase();
     const sel = [...this.selected];
-    if (k === 'escape' && this.placing) {
+    if (k === 'escape' && !$('#menu').classList.contains('hidden')) {
+      this.toggleMenu(false);
+    } else if (k === 'escape' && this.placing) {
       this.setPlacing(null);
-    } else if (k === 'escape') {
+    } else if (k === 'escape' && (this.selected.size || this.region >= 0 || this.view.expanded !== null)) {
       this.selected.clear();
       this.region = -1;
+      this.view.expanded = null;
+    } else if (k === 'escape') {
+      this.toggleMenu(true);
     } else if (k === 'x' && sel.length) {
       for (const id of sel) this.send({ o: 'split', blob: id });
     } else if (k === 'g' && sel.length > 1) {
@@ -841,8 +888,10 @@ export class GameScreen {
     const snap = this.snap;
     if (!snap) return;
     const t = `T+${clock(snap.time)}`;
+    const menu = el('button', { class: 'toggle', title: 'Menu: surrender, leave (Esc)' }, ['Menu']);
+    menu.onclick = () => this.toggleMenu(true);
     if (this.you === null) {
-      $('#topbar').replaceChildren(el('span', { class: 'tag' }, ['[OBSERVER]']), el('span', { class: 'clock' }, [t]));
+      $('#topbar').replaceChildren(el('span', { class: 'tag' }, ['[OBSERVER]']), menu, el('span', { class: 'clock' }, [t]));
       return;
     }
     const p = snap.players[this.you];
@@ -867,7 +916,7 @@ export class GameScreen {
       this.fxChosen = true;
       this.setEffects(this.view.fx.level === 'full' ? 'reduced' : 'full');
     };
-    parts.push(sound, fx);
+    parts.push(sound, fx, menu);
     parts.push(el('span', { class: 'clock' }, [t]));
     $('#topbar').replaceChildren(...parts);
   }
@@ -951,7 +1000,7 @@ export class GameScreen {
         if (e.owner === this.you) text = `${BUILD_LABEL[e.building]}${e.level > 1 ? ` ${e.level}` : ''} finished at ${region(e.region)}`;
         break;
       case 'eliminated':
-        text = `${name(e.player)} knocked out by ${name(e.by)}`;
+        text = e.surrendered ? `${name(e.player)} surrendered` : `${name(e.player)} knocked out by ${name(e.by)}`;
         break;
       case 'war': {
         const target = e.by === e.a ? e.b : e.a;
@@ -982,6 +1031,8 @@ export class GameScreen {
     const panel = $('#panel');
     const snap = this.snap;
     if (!snap) return;
+    // Typing a split amount: leave the panel alone until the field loses focus.
+    if (document.activeElement?.id === 'split-amount' && panel.contains(document.activeElement)) return;
     const sel = [...this.selected].map((id) => this.blob(id)).filter((b): b is BlobRow => !!b);
     if (sel.length) {
       panel.replaceChildren(...this.unitsPanel(sel));
@@ -1030,7 +1081,34 @@ export class GameScreen {
         btn('Merge (G)', () => this.mergeSelected(), 'Same type, same region; costs some training'),
         btn('Halt (H)', () => this.send({ o: 'stop', blobs: sel.map((b) => b[0]) })),
       ]),
+      ...this.splitRow(sel, btn),
       ...sel.slice(0, 30).map((b) => this.unitRow(b, true)),
+    ];
+  }
+
+  /** One unit standing still: split off a batch, half, or any amount. */
+  private splitRow(sel: BlobRow[], btn: (label: string, fn: () => void, title?: string) => HTMLElement): HTMLElement[] {
+    if (sel.length !== 1 || sel[0][8] > 0 || sel[0][4] < 2) return [];
+    const b = sel[0];
+    const size = b[4];
+    const batch = UNITS[UNIT_INDEX[b[2]]].batch;
+    const split = (amount: number) => this.send({ o: 'split', blob: b[0], amount: Math.max(1, Math.min(size - 1, Math.floor(amount))) });
+    const field = el('input', { id: 'split-amount', type: 'number', min: '1', max: String(size - 1), value: String(Math.min(batch, size - 1)) }) as HTMLInputElement;
+    field.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        split(Number(field.value));
+        field.blur();
+        this.renderPanel();
+      } else if (e.key === 'Escape') field.blur();
+    };
+    return [
+      el('div', { class: 'buttons split' }, [
+        el('span', { class: 'label' }, ['Split off']),
+        ...(size > batch ? [btn(String(batch), () => split(batch), `Split off one batch (${batch})`)] : []),
+        btn('½', () => split(size / 2), 'Split off half'),
+        field,
+        btn('Split', () => split(Number(field.value)), 'Split off this many'),
+      ]),
     ];
   }
 
@@ -1045,7 +1123,8 @@ export class GameScreen {
       el('div', { class: 'sub' }, [`${country} · ${region.terrain} · ${region.size}${region.traits.length ? ` · ${region.traits.join(', ')}` : ''}`]),
     ];
     const here = snap.blobs.filter((b) => b[6] === region.id && b[8] === 0);
-    const myCount = here.filter((b) => b[1] === this.you).length;
+    // The stack cap counts every token in the region, moving out or waiting included.
+    const myCount = snap.blobs.filter((b) => b[6] === region.id && b[1] === this.you).length;
     const used = rr[9] + rr[10] + rr[11] + rr[12] + (rr[1] > 0 ? 1 : 0) + (rr[3] & 1 ? 1 : 0) + (rr[3] & 2 ? 1 : 0);
     const info: Array<[string, string]> = [
       ['Owner', owner >= 0 ? (this.players[owner]?.name ?? '?') : 'Neutral'],
