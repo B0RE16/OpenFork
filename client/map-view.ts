@@ -1923,86 +1923,55 @@ function brackets(ctx: CanvasRenderingContext2D, x: number, y: number, half: num
   }
 }
 
-/** The attack arrow, in sprite cells: its length, the head's length and half-width. */
-const ARROW_LEN = 17;
-const ARROW_HEAD = 7;
-const ARROW_DIRS = 32;
-const arrowCache = new Map<string, { c: HTMLCanvasElement; ax: number; ay: number }>();
-
-/** Is (x, y), in the arrow's own frame (tail at the origin, pointing along +x), inside it? */
-function inArrow(x: number, y: number): boolean {
-  if (x < 0 || x > ARROW_LEN) return false;
-  const neck = ARROW_LEN - ARROW_HEAD;
-  if (x >= neck) return Math.abs(y) <= 5.5 * ((ARROW_LEN - x) / ARROW_HEAD);
-  // The shaft widens a little toward the head; the tail has a swallowtail notch.
-  const half = 1.8 + (0.7 * x) / neck;
-  return Math.abs(y) <= half && x >= 1.5 * (1 - Math.abs(y) / half);
-}
-
 /**
- * One HOI4-style arrow, rasterised once per direction (32 of them) and colour, in sprite
- * cells so its pixels stay square: an outline, a body lit on top and shaded underneath, and
- * a soft drop shadow. `ax, ay` is where the tail sits in the sprite.
+ * The attack arrow: one hand-drawn pixel sprite pointing right (an ink outline, the body lit
+ * on top and shaded underneath), turned whole to any angle when drawn, so every arrow has
+ * the same pixels.
  */
-function arrowSprite(dir: number, color: string): { c: HTMLCanvasElement; ax: number; ay: number } {
-  const key = `${dir}|${color}`;
-  let hit = arrowCache.get(key);
-  if (hit) return hit;
-  const a = (dir / ARROW_DIRS) * Math.PI * 2;
-  const cos = Math.cos(a);
-  const sin = Math.sin(a);
-  const pad = 3;
-  const r = ARROW_LEN + 2;
-  const n = r * 2 + pad * 2;
-  const o = r + pad;
-  // Cell centres, turned back into the arrow's frame.
-  const fill = new Uint8Array(n * n);
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      const dx = x + 0.5 - o;
-      const dy = y + 0.5 - o;
-      if (inArrow(dx * cos + dy * sin, -dx * sin + dy * cos)) fill[y * n + x] = 1;
-    }
+const ARROW_ROWS = [
+  '...........O.....',
+  '...........OO....',
+  '...........OLO...',
+  'OOOOOOOOOOOOLLO..',
+  'OLLLLLLLLLLLLCCO.',
+  'OCCCCCCCCCCCCCCCO',
+  'ODDDDDDDDDDDDDDO.',
+  'OOOOOOOOOOOODDO..',
+  '...........ODO...',
+  '...........OO....',
+  '...........O.....',
+];
+const ARROW_LEN = ARROW_ROWS[0].length;
+const arrowCache = new Map<string, HTMLCanvasElement>();
+
+function arrowSprite(color: string): HTMLCanvasElement {
+  let c = arrowCache.get(color);
+  if (!c) {
+    c = color === 'shadow'
+      ? art(ARROW_ROWS.map((r) => r.replace(/[LCD]/g, 'O')), { O: 'rgba(0,0,0,0.3)' })
+      : art(ARROW_ROWS, { L: shade(color, 1.4), C: color, D: shade(color, 0.7) });
+    arrowCache.set(color, c);
   }
-  const at = (x: number, y: number) => x >= 0 && y >= 0 && x < n && y < n && fill[y * n + x] === 1;
-  const c = document.createElement('canvas');
-  c.width = n;
-  c.height = n;
-  const ctx = c.getContext('2d') as CanvasRenderingContext2D;
-  // The shadow (shape and outline, down and right), then the outline, then the body.
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (at(x - 2, y - 2) || at(x - 1, y - 2) || at(x - 2, y - 1)) ctx.fillRect(x, y, 1, 1);
-  ctx.fillStyle = INK;
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      if (at(x, y)) continue;
-      if (at(x - 1, y) || at(x + 1, y) || at(x, y - 1) || at(x, y + 1)) {
-        ctx.clearRect(x, y, 1, 1);
-        ctx.fillRect(x, y, 1, 1);
-      }
-    }
-  }
-  const light = shade(color, 1.4);
-  const dark = shade(color, 0.7);
-  for (let y = 0; y < n; y++) {
-    for (let x = 0; x < n; x++) {
-      if (!at(x, y)) continue;
-      ctx.clearRect(x, y, 1, 1);
-      ctx.fillStyle = !at(x, y - 1) ? light : !at(x, y + 1) ? dark : color;
-      ctx.fillRect(x, y, 1, 1);
-    }
-  }
-  hit = { c, ax: o, ay: o };
-  arrowCache.set(key, hit);
-  return hit;
+  return c;
 }
 
-/** Draws the attack arrow with its tail at (x, y), pointing along (ux, uy), `s` px per cell. */
+/** Draws the attack arrow with its tail at (x, y), pointing along (ux, uy), `s` px per pixel. */
 function drawArrow(ctx: CanvasRenderingContext2D, x: number, y: number, ux: number, uy: number, color: string, s: number, alpha = 1): void {
-  const dir = ((Math.round((Math.atan2(uy, ux) / (Math.PI * 2)) * ARROW_DIRS) % ARROW_DIRS) + ARROW_DIRS) % ARROW_DIRS;
-  const { c, ax, ay } = arrowSprite(dir, color);
+  const w = ARROW_LEN * s;
+  const h = ARROW_ROWS.length * s;
+  const angle = Math.atan2(uy, ux);
   ctx.globalAlpha = alpha;
-  ctx.drawImage(c, Math.round(x - ax * s), Math.round(y - ay * s), c.width * s, c.height * s);
+  // The shadow first, falling down and to the right whatever the arrow's angle.
+  for (const [sprite, dx, dy] of [
+    [arrowSprite('shadow'), s, s],
+    [arrowSprite(color), 0, 0],
+  ] as const) {
+    ctx.save();
+    ctx.translate(x + (ux * w) / 2 + dx, y + (uy * w) / 2 + dy);
+    ctx.rotate(angle);
+    ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
+    ctx.restore();
+  }
   ctx.globalAlpha = 1;
 }
 
