@@ -13,12 +13,16 @@ defensive/easy/normal/hard bots, or pure PvP with no bots. Naval, air, alliances
 
 ```bash
 npm install
-npm start          # builds the client, then serves http://localhost:8090
+npm start          # serves http://localhost:8090 (same as `node server/main.ts`)
 npm test           # rules, bots, lobbies
 npm run typecheck
 ```
 
 Requires Node 22.18+ (the server runs `.ts` files directly through Node's type stripping).
+The server bundles the browser game (`client/` → `public/app.js`, not in git) every time it
+starts, however it's started, so after `git pull` a restart is all it takes; run
+`npm install` too when dependencies changed. If it can't build (esbuild missing), it says
+so at startup when the bundle is out of date.
 Set `PORT` and `HOST` to change where it listens.
 
 Open the page, enter a name and **Create a private lobby**. **Copy invite link** and send it

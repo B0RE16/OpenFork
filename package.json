@@ -9,19 +9,19 @@
   },
   "scripts": {
     "build": "esbuild client/main.ts --bundle --format=esm --target=es2022 --sourcemap --outfile=public/app.js",
-    "start": "npm run build && node server/main.ts",
+    "start": "node server/main.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "build:map": "node scripts/build-map.ts"
   },
   "dependencies": {
+    "esbuild": "^0.28.2",
     "ws": "^8.22.0"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
     "@types/pngjs": "^6.0.5",
     "@types/ws": "^8.18.2",
-    "esbuild": "^0.28.2",
     "fflate": "^0.8.3",
     "pngjs": "^7.0.0",
     "typescript": "^7.0.2"
