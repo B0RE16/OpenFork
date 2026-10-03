@@ -34,6 +34,10 @@ export const PLAYABLE: Array<{ id: string; name: string; capital: [number, numbe
   { id: 'FI', name: 'Finland', capital: [24.94, 60.17] },
   { id: 'RO', name: 'Romania', capital: [26.1, 44.43] },
   { id: 'GR', name: 'Greece', capital: [23.73, 37.98] },
+  { id: 'AT', name: 'Austria', capital: [16.37, 48.21] },
+  { id: 'CZ', name: 'Czech Republic', capital: [14.42, 50.09] },
+  { id: 'HU', name: 'Hungary', capital: [19.04, 47.5] },
+  { id: 'BG', name: 'Bulgaria', capital: [23.32, 42.7] },
 ];
 
 /** Big industrial areas: the region containing each point gets the industry trait. */

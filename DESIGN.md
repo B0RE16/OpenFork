@@ -10,7 +10,7 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 
 ## 1. Match
 - Real-time and continuous. Target length is 15–25 min. No time limit and no pause.
-- 4–8 countries per match. Humans join a **private lobby link**; bots fill the rest. The host
+- 4–15 countries per match. Humans join a **private lobby link**; bots fill the rest. The host
   sets lobby size, starting resources (low/normal/high), country pick (free or random) and
   bot difficulty (easy/normal/hard).
 - Spectating is allowed for eliminated players and visitors.
@@ -27,8 +27,12 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 ## 2. Map
 - v1 map: **Europe, modern countries, mainland only, Atlantic to the Urals** (no UK, Ireland,
   Iceland or islands until naval exists). About 300 land regions built from **real provinces**, with admin borders merged or split to that count (denser in the west, coarser in Russia).
-- A map has **more start countries than lobby slots**. Humans pick, bots fill up to the lobby
-  size, and the other countries start as empty neutral land.
+- A map has **more start countries than lobby slots**: Europe has 18 (Austria, Belarus,
+  Bulgaria, Czech Republic, Finland, France, Germany, Greece, Hungary, Italy, Norway,
+  Poland, Portugal, Romania, Russia, Spain, Sweden, Ukraine). Humans pick, bots fill up to
+  the lobby size, and the other countries start as empty neutral land.
+- **Spawn spacing** can't keep 15 capitals 600 km apart; past that, each new country goes
+  as far as it can from the ones already taken.
 - **Spawn spacing:** bots and randomly dealt countries keep their capitals at least 600 km
   from the ones already taken. Countries people pick themselves aren't restricted.
 - **Small start:** capital + about 4 neighbouring regions, 2–3 infantry blobs, and a barracks in

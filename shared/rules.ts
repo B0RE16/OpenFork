@@ -309,13 +309,29 @@ export const BOT_MIN_WAR_SECONDS = 180;
 /** Bot fill and random deals keep capitals at least this far apart (spawn spacing). */
 export const MIN_CAPITAL_KM = 600;
 export const MIN_PLAYERS = 4;
-export const MAX_PLAYERS = 8;
+export const MAX_PLAYERS = 15;
 export type BotDifficulty = 'easy' | 'normal' | 'hard';
 /** A human who drops is replaced by a bot after this many seconds (until they come back). */
 export const DISCONNECT_BOT_SECONDS = 10;
 
 /** Muted military colours, one per country, picked to stay apart on the terrain. */
-export const PLAYER_COLORS = ['#c0504d', '#4f81bd', '#9bbb59', '#e0a33a', '#8064a2', '#4bacc6', '#d46f3b', '#2f6b5a'];
+export const PLAYER_COLORS = [
+  '#c0504d',
+  '#4f81bd',
+  '#9bbb59',
+  '#e0a33a',
+  '#8064a2',
+  '#4bacc6',
+  '#d46f3b',
+  '#2f6b5a',
+  '#d9c24a',
+  '#d27fb4',
+  '#8c5a3c',
+  '#2e4a8a',
+  '#7a2e3a',
+  '#a99be0',
+  '#3fa36b',
+];
 
 // -- per-region numbers -----------------------------------------------------------------------
 

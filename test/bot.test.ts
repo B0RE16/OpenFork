@@ -11,7 +11,10 @@ import { World } from '../server/core/world.ts';
 const europe: GameMap = JSON.parse(readFileSync(new URL('../public/maps/europe.json', import.meta.url), 'utf8'));
 
 function play(difficulty: BotDifficulty, seconds: number) {
-  const countries = europe.countries.filter((c) => c.playable).slice(0, 8);
+  // A fixed eight (the map's first playable ones before more were added), so the numbers
+  // below don't shift when the map gains countries.
+  const picks = ['BY', 'FI', 'FR', 'DE', 'GR', 'IT', 'NO', 'PL'];
+  const countries = europe.countries.filter((c) => c.playable && picks.includes(c.id));
   const sim = new Sim(
     new World(europe),
     countries.map((c, i) => ({ name: c.name, country: c.id, color: PLAYER_COLORS[i], control: 'bot', difficulty })),
