@@ -486,18 +486,18 @@ function regionAt(lon: number, lat: number): number {
 
 const names = new Array<string>(R).fill('');
 const traits = Array.from({ length: R }, () => new Set<Trait>());
-/** City level per region (0: none), from its largest place of 500k people or more. */
+/** City level per region (0: none), from its largest place of a million people or more. */
 const cityLevel = new Array<number>(R).fill(0);
 const cityAt = new Array<[number, number] | null>(R).fill(null);
 /** Big cities (a million or more) aren't farmland. */
 const bigCity = new Array<boolean>(R).fill(false);
-const levelOfPop = (pop: number) => (pop >= 8e6 ? 5 : pop >= 4e6 ? 4 : pop >= 2e6 ? 3 : pop >= 1e6 ? 2 : 1);
+const levelOfPop = (pop: number) => (pop >= 8e6 ? 4 : pop >= 4e6 ? 3 : pop >= 2e6 ? 2 : 1);
 for (const p of places) {
   const r = regionAt(p.lon, p.lat);
   if (r === -1) continue;
   if (!names[r] && p.pop >= 20_000) names[r] = p.name;
   if (p.pop >= 1_000_000) bigCity[r] = true;
-  if (p.pop >= 500_000 && !cityLevel[r]) {
+  if (p.pop >= 1_000_000 && !cityLevel[r]) {
     cityLevel[r] = levelOfPop(p.pop);
     const [fx, fy] = grid.toPx(p.lon, p.lat);
     cityAt[r] = [Math.round(fx), Math.round(fy)];

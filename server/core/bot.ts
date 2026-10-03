@@ -10,6 +10,7 @@ import {
   BOT_PEACE_WHEN_WEAKER,
   type BotDifficulty,
   type BuildingKind,
+  buildCost,
   ECON_KINDS,
   type EconKind,
   MAX_CITY,
@@ -45,8 +46,8 @@ interface Style {
 
 const STYLES: Record<BotDifficulty, Style> = {
   easy: { think: 3, odds: 2.2, forts: 1, tanks: false, merges: false, reserve: 150, develop: 0.5, smart: false, roads: false, found: Infinity, cityCap: 3 },
-  normal: { think: 1.5, odds: 1.6, forts: 2, tanks: true, merges: true, reserve: 100, develop: 0.8, smart: true, roads: true, found: 700, cityCap: 4 },
-  hard: { think: 0.6, odds: 1.25, forts: 3, tanks: true, merges: true, reserve: 60, develop: 1, smart: true, roads: true, found: 500, cityCap: MAX_CITY },
+  normal: { think: 1.5, odds: 1.6, forts: 2, tanks: true, merges: true, reserve: 100, develop: 0.8, smart: true, roads: true, found: 2400, cityCap: 4 },
+  hard: { think: 0.6, odds: 1.25, forts: 3, tanks: true, merges: true, reserve: 60, develop: 1, smart: true, roads: true, found: 2000, cityCap: MAX_CITY },
 };
 
 export class Bot {
@@ -188,15 +189,6 @@ export class Bot {
       .sort((a, b) => b.threat - a.threat);
     if (threatened.length && sim.build(this.player, threatened[0].r, 'fort') === null) return;
 
-    // In peacetime too: dig in on borders where a neighbour's army stands close.
-    if (me.resources.money > this.style.reserve * 2) {
-      const border = mine
-        .filter((r) => regions[r].fort < Math.max(1, this.style.forts - 1) && regions[r].supplied && !regions[r].construction)
-        .map((r) => ({ r, foreign: this.foreignNear(sim, r) }))
-        .filter((x) => x.foreign > 0)
-        .sort((a, b) => b.foreign - a.foreign)[0];
-      if (border && sim.build(this.player, border.r, 'fort') === null) return;
-    }
 
     const cities = mine.filter((r) => regions[r].city > 0);
     const can = (r: number, kind: BuildingKind, target = -1) => sim.whyNotBuild(this.player, r, kind, target) === null;
@@ -225,12 +217,12 @@ export class Bot {
         return !!econ && sim.build(this.player, econ.r, econ.kind) === null;
       },
       () => {
-        // Grow the cities, the capital first, then the biggest.
-        if (me.resources.money < this.style.reserve * 2) return false;
+        // Grow the cities, the capital first, then the biggest, when well off (3× the cost).
         const grow = cities
           .filter((r) => regions[r].city < this.style.cityCap && can(r, 'city'))
           .sort((a, b) => Number(b === me.capital) - Number(a === me.capital) || regions[b].city - regions[a].city)[0];
-        return grow !== undefined && sim.build(this.player, grow, 'city') === null;
+        if (grow === undefined || me.resources.money < 3 * buildCost('city', sim.nextLevel(regions[grow], 'city')).cost.money) return false;
+        return sim.build(this.player, grow, 'city') === null;
       },
       () => {
         // Roads: grow the network out of the cities toward the borders.
@@ -240,7 +232,7 @@ export class Bot {
       },
       () => {
         // A new city where our land is far from the others.
-        if (me.resources.money < this.style.found || me.resources.steel < 60) return false;
+        if (me.resources.money < this.style.found || me.resources.steel < 300) return false;
         const site = mine
           .filter((r) => regions[r].city === 0 && can(r, 'city'))
           .map((r) => ({ r, d: Math.min(...cities.map((c) => this.hops(sim, r, c))) }))
@@ -251,6 +243,17 @@ export class Bot {
     const roll = this.random();
     const first = roll < 0.45 ? 0 : roll < 0.7 ? 1 : roll < 0.9 ? 2 : 3;
     for (let i = 0; i < steps.length; i++) if (steps[(first + i) % steps.length]()) return;
+
+    // Spare money in peacetime: dig in on borders where a neighbour's army stands close
+    // (slots are scarce, so the economy comes first).
+    if (me.resources.money > this.style.reserve * 3) {
+      const border = mine
+        .filter((r) => regions[r].fort < Math.max(1, this.style.forts - 1) && regions[r].supplied && !regions[r].construction)
+        .map((r) => ({ r, foreign: this.foreignNear(sim, r) }))
+        .filter((x) => x.foreign > 0)
+        .sort((a, b) => b.foreign - a.foreign)[0];
+      if (border) sim.build(this.player, border.r, 'fort');
+    }
   }
 
   /** Where to put the next economic building, and which. */

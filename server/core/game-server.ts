@@ -28,6 +28,8 @@ interface Lobby {
   game: Game | null;
   emptySince: number | null;
   ticks: number;
+  /** Someone gave an order: send snapshots on the next tick, not the next scheduled one. */
+  urgent?: boolean;
 }
 
 export interface GameServerDeps {
@@ -208,6 +210,7 @@ export class GameServer {
       case 'order': {
         const lobby = this.lobbyOf(me.id);
         if (!lobby?.game || lobby.game.over) return 'no game running';
+        lobby.urgent = true;
         return lobby.game.order(me.id, msg.order);
       }
     }
@@ -369,7 +372,8 @@ export class GameServer {
       if (!game || game.over) continue;
       game.tick();
       lobby.ticks++;
-      if (lobby.ticks % SNAPSHOT_EVERY_TICKS !== 0 && !game.over) continue;
+      if (lobby.ticks % SNAPSHOT_EVERY_TICKS !== 0 && !game.over && !lobby.urgent) continue;
+      lobby.urgent = false;
       const shared = game.sharedSnapshot(game.takeEvents());
       for (const m of lobby.members.values()) {
         if (m.conns.size === 0) continue;

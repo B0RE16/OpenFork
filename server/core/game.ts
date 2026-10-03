@@ -199,6 +199,7 @@ export class Game {
         round(b.entrench, 2),
         round(b.supply, 2),
         (b.hold ? 1 : 0) | (b.crossedRiver ? 2 : 0),
+        b.from,
       ]);
     }
     const pair = (key: string, sep: string) => key.split(sep).map(Number) as [number, number];

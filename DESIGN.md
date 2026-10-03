@@ -47,15 +47,17 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
   below upkeep, **blobs wither**: they lose strength and training until you're back in the
   plus.
 - **Cities** (levels 1–5) are the heart of development.
-  - The map's cities are the real ones with 500k people or more; their starting level comes
-    from the population (Paris, Moscow, Istanbul 5).
+  - The map's cities are the real ones with a million people or more (about 50); their
+    starting level comes from the population (1–2M: 1 … 8M+: 4, so Paris, Moscow and
+    Istanbul start at 4). Level 5 only comes from expanding.
   - Your capital starts at level 3 or more; cities of countries nobody plays start at 1, so
     nobody gets a free metropolis.
   - **Expand city** (a build, cost and time grow with the level) gives more tax, a slot, +1
     stack cap and one more hop of supply reach.
   - **Found a city** in a region of yours that's in supply and not next to another city
-    ($400, 60 steel, 90 s). It starts at level 1 and is a supply hub.
-- **Slots:** a region has 1 (small), 2 (medium) or 3 (large), plus its city level. Every
+    ($1600, 240 steel, 4 minutes): a rare, big decision. It starts at level 1 and is a
+    supply hub. Expanding to level L costs $240·L and 40·(L−1) steel and takes L minutes.
+- **Slots:** a region has 1 (2 if large), plus its city level. Every
   building but cities and roads takes one (a fort takes one for all its levels). Choosing
   what a region is for is the trade-off; demolishing frees a slot at once, with no refund.
 - **Economic buildings** go only within 2 regions of one of your cities:
@@ -114,8 +116,16 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 - **Capturing:** an empty enemy or neutral region is captured after the blob **holds it for a
   while**. The time scales with the region's size and terrain, forts make it longer, and
   training makes it shorter.
-- **Retreat:** a blob can leave a battle, but it loses strength and training while
-  disengaging.
+- **How a fight looks:** units in their own region hold the middle (with a shield showing
+  their fort level, whether they're dug in, and a river crossed by the attackers); units
+  attacking or taking a region stand on the border they crossed, one group per border,
+  with a big arrow in their colour pointing in (standing further back when the region is
+  small on screen, so the arrow always fits). One crossed swords per fight, beside the
+  main arrow. Borders between countries at war show as two-colour front lines; units
+  pulling out of a fight get a grey arrow back.
+- **Retreat:** a blob can leave a battle, but only backwards: to the region it came from or
+  to a neighbouring region its owner holds, never on past the enemy. It loses strength and
+  training while disengaging.
 
 ## 6. Battles (contested regions)
 - A region with hostile blobs in it is **contested**. Fighting is **continuous attrition**:
@@ -200,7 +210,9 @@ going their way. A bot playing for a disconnected person never starts a war.
 | Infantry / tank production | 20 s / 30 s |
 | Truce after peace / peace offer stands | 180 s / 30 s |
 | Supply reach from a city | 3 + its level (roads: half a hop) |
-| Base yield per region (money / manpower) | 0.25 / 0.15 per s |
+| Base yield per region (money / manpower) | 0.12 / 0.15 per s |
+| Starting resources (normal) | $120, 120 manpower, 25 steel, 20 oil |
+| Build times | farm, market 60 s; mine, oil well 75 s; fort 60 s per level; barracks 60 s; factory 120 s; road 30 s |
 | Stack cap | 2–4 tokens by size/terrain, +1 per fort level, +1 per city level |
-| Slots | 1 / 2 / 3 by size, + city level |
+| Slots | 1 (large: 2), + city level |
 | Retreat cost | −15% strength, −10 training |

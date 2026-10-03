@@ -1,10 +1,11 @@
 // Draws the map: terrain picture, territory tint and borders, region icons, unit tokens.
 // Also does the camera (pan/zoom) and hit-testing for the input code.
 import { decodeGrid, type GameMap, WATER } from '../shared/map.ts';
-import type { BlobRow, GamePlayer, RegionRow, Snapshot } from '../shared/protocol.ts';
+import type { BlobRow, GamePlayer, Snapshot } from '../shared/protocol.ts';
 import { UNIT_INDEX } from '../shared/protocol.ts';
-import { ROAD_SUPPLY_HOP, supplyCapacity, supplyReach, UNITS } from '../shared/rules.ts';
-import { blit, blitCentred, FRAME_H, FRAME_W, ICONS, INK, MAP_ART, pixelDigits, ROAD_COLOR, ROAD_SHADE, type Sprite, unitFrame } from './sprites.ts';
+import { BUILDING_KINDS, type BuildingKind, ROAD_SUPPLY_HOP, supplyCapacity, supplyReach, UNITS } from '../shared/rules.ts';
+import { Fx } from './fx.ts';
+import { art, blit, blitCentred, FRAME_H, FRAME_W, ICONS, INK, MAP_ART, pixelDigits, ROAD_COLOR, ROAD_SHADE, shade, type Sprite, unitFrame } from './sprites.ts';
 
 export interface Camera {
   x: number;
@@ -37,6 +38,8 @@ interface Item {
   group: string;
   /** Part of the expanded stack: never merged or pushed, drawn on top. */
   pinned?: boolean;
+  /** Defenders under attack: what helps them hold (shown as a shield badge). */
+  shield?: { fort: number; dug: boolean; river: boolean };
   /** Position in map coordinates. */
   tx: number;
   ty: number;
@@ -52,26 +55,64 @@ export class MapView {
   private readonly highlight: HTMLCanvasElement;
   private readonly edges: Int32Array;
   private readonly edgeOther: Uint16Array;
-  private ownersKey = '';
+  /** Each region's land pixels, the border pixels touching it (indexes into `edges`), and
+   * its bounding box: so a change of hands repaints only that region. */
+  private readonly regionPixels: Int32Array[];
+  private readonly regionEdges: Int32Array[];
+  private readonly regionBox: Int32Array;
+  /** What the territory layer shows now, per region (owner, cut off). */
+  private readonly shownOwner: Int16Array;
+  private readonly shownCut: Uint8Array;
+  private territoryImg: ImageData | null = null;
+  private territoryRgb: Array<[number, number, number]> | null = null;
+  /** Captures being swept in: pixel order (nearest the taker first) and how far it got. */
+  private readonly sweeps = new Map<number, { order: Int32Array; done: number; start: number }>();
+  private territorySnap: Snapshot | null = null;
   private highlighted = -2;
   cam: Camera = { x: 0, y: 0, scale: 1 };
   /** Supply overlay on (for the player `you`). */
   overlay = false;
   private readonly supplyLayer: HTMLCanvasElement;
-  private supplyKey = '';
+  private supplySnap: Snapshot | null = null;
+  private supplyImg: ImageData | null = null;
+  private shownSupply = new Uint8Array(0);
   private supply: SupplyInfo | null = null;
   private placed: Placed[] = [];
   /** The stack shown as single tokens after a click on it, or null. */
   expanded: string | null = null;
   /** Placement mode: where the building can go, and the region under the cursor. */
   placement: { valid: Set<number>; hover: number } | null = null;
+  /** Orders sent but not yet in a snapshot, drawn at once so input feels instant. */
+  readonly pending: {
+    move: { ids: number[]; to: number; since: number } | null;
+    builds: Array<{ region: number; kind: BuildingKind; since: number }>;
+  } = { move: null, builds: [] };
+  /** Effects under the tokens (smoke, flashes, dust) and over them (loss numbers). */
+  readonly fx = new Fx();
+  /** Hooks for sound, set by the game screen. */
+  sounds: { gun(volume: number): void; boom(volume: number): void } | null = null;
+  /** Hops: where each unit was last drawn and in which region, and glides under way. */
+  private lastDrawn = new Map<number, [number, number]>();
+  private lastRegion = new Map<number, number>();
+  private readonly glides = new Map<number, { x: number; y: number; start: number }>();
+  /** Units hit recently (shake until). */
+  private readonly shaking = new Map<number, number>();
+  private frameAt = performance.now();
   /** Road tool: the regions dragged across so far, drawn as a dashed line. */
   roadPreview: number[] | null = null;
   private readonly placeLayer: HTMLCanvasElement;
-  private placeKey = '';
+  /** Front lines: borders between countries at war, as two-colour seams. */
+  private readonly frontLayer: HTMLCanvasElement;
+  private frontImg: ImageData | null = null;
+  private frontPix: number[] = [];
+  private frontKey = '';
+  private frontSnap: Snapshot | null = null;
+  private placeImg: ImageData | null = null;
+  private shownValid = new Uint8Array(0);
   /** Towns, buildings and roads, painted at map resolution (they zoom with the terrain). */
   private readonly developLayer: HTMLCanvasElement;
   private developKey = '';
+  private developSnap: Snapshot | null = null;
   /** Per region: free spots for building sprites, nearest the label point first. */
   private readonly spots = new Map<number, Array<[number, number]>>();
 
@@ -85,6 +126,7 @@ export class MapView {
     this.highlight = offscreen(map.width, map.height);
     this.supplyLayer = offscreen(map.width, map.height);
     this.placeLayer = offscreen(map.width, map.height);
+    this.frontLayer = offscreen(map.width, map.height);
     this.developLayer = offscreen(map.width, map.height);
     // Border pixels never change; only who owns each side does.
     const W = map.width;
@@ -105,6 +147,40 @@ export class MapView {
     }
     this.edges = Int32Array.from(edges);
     this.edgeOther = Uint16Array.from(other);
+
+    const R = map.regions.length;
+    const count = new Int32Array(R);
+    const box = new Int32Array(R * 4);
+    for (let r = 0; r < R; r++) box.set([W, map.height, -1, -1], r * 4);
+    for (let i = 0; i < this.grid.length; i++) {
+      const r = this.grid[i];
+      if (r === WATER) continue;
+      count[r]++;
+      const x = i % W;
+      const y = (i - x) / W;
+      const o = r * 4;
+      if (x < box[o]) box[o] = x;
+      if (y < box[o + 1]) box[o + 1] = y;
+      if (x > box[o + 2]) box[o + 2] = x;
+      if (y > box[o + 3]) box[o + 3] = y;
+    }
+    this.regionBox = box;
+    this.regionPixels = Array.from({ length: R }, (_, r) => new Int32Array(count[r]));
+    const fill = new Int32Array(R);
+    for (let i = 0; i < this.grid.length; i++) {
+      const r = this.grid[i];
+      if (r !== WATER) this.regionPixels[r][fill[r]++] = i;
+    }
+    const touching: number[][] = Array.from({ length: R }, () => []);
+    for (let k = 0; k < this.edges.length; k++) {
+      touching[this.grid[this.edges[k]]].push(k);
+      if (this.edgeOther[k] !== WATER) touching[this.edgeOther[k]].push(k);
+    }
+    this.regionEdges = touching.map((t) => Int32Array.from(t));
+    this.shownOwner = new Int16Array(R).fill(-3);
+    this.shownSupply = new Uint8Array(R);
+    this.shownValid = new Uint8Array(R);
+    this.shownCut = new Uint8Array(R);
   }
 
   // -- camera -----------------------------------------------------------------------------
@@ -224,60 +300,178 @@ export class MapView {
 
   // -- state --------------------------------------------------------------------------------
 
-  private updateTerritory(regions: RegionRow[], players: GamePlayer[]): void {
-    const key = regions.map((r) => `${r[0]}${r[3] & 4 ? '' : 'x'}`).join(',');
-    if (key === this.ownersKey) return;
-    this.ownersKey = key;
-    const W = this.map.width;
-    const H = this.map.height;
-    const ctx = this.territory.getContext('2d') as CanvasRenderingContext2D;
-    const img = ctx.createImageData(W, H);
-    const d = img.data;
-    const rgb = players.map((p) => hexRgb(p.color));
-    for (let i = 0; i < this.grid.length; i++) {
-      const r = this.grid[i];
-      if (r === WATER) continue;
+  /** Repaints the territory tint for regions that changed hands or supply (only those). A
+   * region that changed hands fills with its new colour from the attacked border instead. */
+  private updateTerritory(snap: Snapshot, players: GamePlayer[]): void {
+    if (snap === this.territorySnap) return;
+    this.territorySnap = snap;
+    this.territoryRgb ??= players.map((p) => hexRgb(p.color));
+    const regions = snap.regions;
+    const dirty: number[] = [];
+    const now = performance.now();
+    for (let r = 0; r < regions.length; r++) {
       const owner = regions[r][0];
-      if (owner < 0) continue;
-      const c = rgb[owner];
-      const o = i * 4;
-      const x = i % W;
-      const y = (i - x) / W;
-      // Out of supply: paler, with dark diagonal hatching.
-      const cut = !(regions[r][3] & 4);
-      if (cut && (x + y) % 6 === 0) {
-        d[o] = c[0] * 0.35;
-        d[o + 1] = c[1] * 0.35;
-        d[o + 2] = c[2] * 0.35;
-        d[o + 3] = 170;
+      const cut = regions[r][3] & 4 ? 0 : 1;
+      const was = this.shownOwner[r];
+      if (owner === was && cut === this.shownCut[r]) continue;
+      this.shownOwner[r] = owner;
+      this.shownCut[r] = cut;
+      if (owner !== was && was !== -3 && owner >= 0) {
+        // Taken: sweep the new colour across from the border with the taker's land.
+        this.sweeps.set(r, { order: this.sweepOrder(r, owner, snap), done: 0, start: now });
         continue;
       }
-      d[o] = c[0];
-      d[o + 1] = c[1];
-      d[o + 2] = c[2];
-      d[o + 3] = cut ? 55 : 100;
+      if (this.sweeps.has(r)) continue; // repainted whole when its sweep ends
+      dirty.push(r);
     }
-    for (let k = 0; k < this.edges.length; k++) {
-      const i = this.edges[k];
-      const r = this.grid[i];
-      const other = this.edgeOther[k];
-      const owner = regions[r][0];
-      const otherOwner = other === WATER ? -2 : regions[other][0];
-      const o = i * 4;
-      if (owner >= 0 && owner !== otherOwner) {
-        const c = rgb[owner];
-        d[o] = c[0] * 0.75;
-        d[o + 1] = c[1] * 0.75;
-        d[o + 2] = c[2] * 0.75;
-        d[o + 3] = 235;
-      } else if (other !== WATER) {
-        d[o] = 20;
-        d[o + 1] = 20;
-        d[o + 2] = 20;
-        d[o + 3] = 70;
+    if (dirty.length) this.repaintRegions(dirty);
+  }
+
+  /** The order a captured region's pixels change colour in: nearest the taker's land first. */
+  private sweepOrder(r: number, owner: number, snap: Snapshot): Int32Array {
+    const W = this.map.width;
+    const pix = this.regionPixels[r];
+    const dist = new Map<number, number>();
+    const queue: number[] = [];
+    for (const i of pix) {
+      const x = i % W;
+      for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W]) {
+        if (j < 0 || j >= this.grid.length) continue;
+        const o = this.grid[j];
+        if (o !== WATER && o !== r && snap.regions[o][0] === owner) {
+          dist.set(i, 0);
+          queue.push(i);
+          break;
+        }
       }
     }
-    ctx.putImageData(img, 0, 0);
+    if (!queue.length) {
+      // No land of theirs next to it: from the middle.
+      const reg = this.map.regions[r];
+      let best = pix[0];
+      let bestD = Infinity;
+      for (const i of pix) {
+        const d = Math.abs((i % W) - reg.x) + Math.abs(Math.floor(i / W) - reg.y);
+        if (d < bestD) [best, bestD] = [i, d];
+      }
+      dist.set(best, 0);
+      queue.push(best);
+    }
+    for (let q = 0; q < queue.length; q++) {
+      const i = queue[q];
+      const x = i % W;
+      for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W]) {
+        if (j < 0 || j >= this.grid.length || this.grid[j] !== r || dist.has(j)) continue;
+        dist.set(j, (dist.get(i) as number) + 1);
+        queue.push(j);
+      }
+    }
+    return Int32Array.from(queue);
+  }
+
+  /** Captures in progress: more of the region takes the new colour each frame (~1 s). */
+  private animateSweeps(now: number): void {
+    if (!this.sweeps.size || !this.territorySnap || !this.territoryImg) return;
+    const ctx = this.territory.getContext('2d') as CanvasRenderingContext2D;
+    for (const [r, sw] of [...this.sweeps]) {
+      const t = Math.min(1, (now - sw.start) / SWEEP_MS);
+      const upto = Math.floor(sw.order.length * (1 - (1 - t) ** 2));
+      for (let k = sw.done; k < upto; k++) this.fillPixel(sw.order[k]);
+      sw.done = upto;
+      const o = r * 4;
+      const box = this.regionBox;
+      if (t >= 1) {
+        this.sweeps.delete(r);
+        this.repaintRegions([r]);
+        // A bright edge around the region as it settles.
+        const W = this.map.width;
+        for (const k of this.regionEdges[r]) {
+          if (Math.random() > 0.25) continue;
+          const i = this.edges[k];
+          this.fx.add({ kind: 'spark', x: i % W, y: Math.floor(i / W), vx: 0, vy: 0, life: 450, size: 1, color: '#ffffff' });
+        }
+      } else {
+        ctx.putImageData(this.territoryImg, 0, 0, box[o], box[o + 1], box[o + 2] - box[o] + 1, box[o + 3] - box[o + 1] + 1);
+      }
+    }
+  }
+
+  /** One pixel of the territory tint, from the latest snapshot. */
+  private fillPixel(i: number): void {
+    const d = (this.territoryImg as ImageData).data;
+    const regions = (this.territorySnap as Snapshot).regions;
+    const W = this.map.width;
+    const r = this.grid[i];
+    const o = i * 4;
+    const owner = regions[r][0];
+    if (owner < 0) {
+      d[o + 3] = 0;
+      return;
+    }
+    const c = (this.territoryRgb as Array<[number, number, number]>)[owner];
+    const x = i % W;
+    const y = (i - x) / W;
+    // Out of supply: paler, with dark diagonal hatching.
+    const cut = !(regions[r][3] & 4);
+    if (cut && (x + y) % 6 === 0) {
+      d[o] = c[0] * 0.35;
+      d[o + 1] = c[1] * 0.35;
+      d[o + 2] = c[2] * 0.35;
+      d[o + 3] = 170;
+      return;
+    }
+    d[o] = c[0];
+    d[o + 1] = c[1];
+    d[o + 2] = c[2];
+    d[o + 3] = cut ? 55 : 100;
+  }
+
+  /** Repaints whole regions (and the borders they touch) at once. */
+  private repaintRegions(dirty: number[]): void {
+    const W = this.map.width;
+    const ctx = this.territory.getContext('2d') as CanvasRenderingContext2D;
+    this.territoryImg ??= ctx.createImageData(W, this.map.height);
+    const d = this.territoryImg.data;
+    const regions = (this.territorySnap as Snapshot).regions;
+    const rgb = this.territoryRgb as Array<[number, number, number]>;
+    let [x0, y0, x1, y1] = [W, this.map.height, -1, -1];
+    const grow = (r: number) => {
+      const o = r * 4;
+      x0 = Math.min(x0, this.regionBox[o]);
+      y0 = Math.min(y0, this.regionBox[o + 1]);
+      x1 = Math.max(x1, this.regionBox[o + 2]);
+      y1 = Math.max(y1, this.regionBox[o + 3]);
+    };
+    for (const r of dirty) {
+      for (const i of this.regionPixels[r]) this.fillPixel(i);
+      grow(r);
+    }
+    // Borders: on both sides of every border a changed region touches.
+    for (const r of dirty) {
+      for (const k of this.regionEdges[r]) {
+        const i = this.edges[k];
+        const own = this.grid[i];
+        if (own !== r) grow(own);
+        this.fillPixel(i);
+        const other = this.edgeOther[k];
+        const owner = regions[own][0];
+        const otherOwner = other === WATER ? -2 : regions[other][0];
+        const o = i * 4;
+        if (owner >= 0 && owner !== otherOwner) {
+          const c = rgb[owner];
+          d[o] = c[0] * 0.75;
+          d[o + 1] = c[1] * 0.75;
+          d[o + 2] = c[2] * 0.75;
+          d[o + 3] = 235;
+        } else if (other !== WATER) {
+          d[o] = 20;
+          d[o + 1] = 20;
+          d[o + 2] = 20;
+          d[o + 3] = 70;
+        }
+      }
+    }
+    if (x1 >= x0) ctx.putImageData(this.territoryImg, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
   }
 
   /** Your supply network, worked out the way the server does (DESIGN.md §7). */
@@ -318,32 +512,89 @@ export class MapView {
     return { left, hubs, need };
   }
 
+  /** Supply overlay: worked out once per snapshot; only regions whose state changed repaint. */
   private updateSupplyLayer(snap: Snapshot, players: GamePlayer[], you: number): void {
-    const key = `${you}|${snap.regions.map((r) => `${r[0]}.${r[2]}`).join(',')}|${snap.roads.length}`;
+    if (snap === this.supplySnap) return;
+    this.supplySnap = snap;
     this.supply = this.supplyInfo(snap, players, you);
-    if (key === this.supplyKey) return;
-    this.supplyKey = key;
     const W = this.map.width;
     const ctx = this.supplyLayer.getContext('2d') as CanvasRenderingContext2D;
-    const img = ctx.createImageData(W, this.map.height);
-    const d = img.data;
-    const colorOfRegion = new Map<number, [number, number, number]>();
+    this.supplyImg ??= ctx.createImageData(W, this.map.height);
+    const d = this.supplyImg.data;
+    const COLORS: Array<[number, number, number] | null> = [null, [79, 209, 255], [255, 179, 71], [255, 90, 90]];
+    let [x0, y0, x1, y1] = [W, this.map.height, -1, -1];
     snap.regions.forEach((r, i) => {
-      if (r[0] !== you) return;
+      // 0: not yours, 1: in supply, 2: at the edge of reach, 3: cut off.
       const left = this.supply?.left.get(i);
-      colorOfRegion.set(i, left === undefined ? [255, 90, 90] : left < 2 ? [255, 179, 71] : [79, 209, 255]);
+      const state = r[0] !== you ? 0 : left === undefined ? 3 : left < 2 ? 2 : 1;
+      if (state === this.shownSupply[i]) return;
+      this.shownSupply[i] = state;
+      const c = COLORS[state];
+      for (const p of this.regionPixels[i]) {
+        const x = p % W;
+        if (!c || (x + (p - x) / W) % 2) {
+          d[p * 4 + 3] = 0; // dithered
+          continue;
+        }
+        d[p * 4] = c[0];
+        d[p * 4 + 1] = c[1];
+        d[p * 4 + 2] = c[2];
+        d[p * 4 + 3] = 150;
+      }
+      const o = i * 4;
+      x0 = Math.min(x0, this.regionBox[o]);
+      y0 = Math.min(y0, this.regionBox[o + 1]);
+      x1 = Math.max(x1, this.regionBox[o + 2]);
+      y1 = Math.max(y1, this.regionBox[o + 3]);
     });
-    for (let i = 0; i < this.grid.length; i++) {
-      const c = colorOfRegion.get(this.grid[i]);
-      if (!c) continue;
+    if (x1 >= x0) ctx.putImageData(this.supplyImg, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+  }
+
+  /** Repaints the front lines when owners or wars changed (once per snapshot at most). */
+  private updateFrontLayer(snap: Snapshot, players: GamePlayer[]): void {
+    if (snap === this.frontSnap) return;
+    this.frontSnap = snap;
+    const key = `${JSON.stringify(snap.wars)}|${snap.regions.map((r) => r[0]).join(',')}`;
+    if (key === this.frontKey) return;
+    this.frontKey = key;
+    const W = this.map.width;
+    const ctx = this.frontLayer.getContext('2d') as CanvasRenderingContext2D;
+    this.frontImg ??= ctx.createImageData(W, this.map.height);
+    const d = this.frontImg.data;
+    for (const i of this.frontPix) d[i * 4 + 3] = 0;
+    const wars = new Set(snap.wars.map(([a, b]) => `${Math.min(a, b)}:${Math.max(a, b)}`));
+    const rgb = players.map((p) => hexRgb(p.color));
+    const painted: number[] = [];
+    for (let k = 0; k < this.edges.length; k++) {
+      const other = this.edgeOther[k];
+      if (other === WATER) continue;
+      const i = this.edges[k];
+      const a = snap.regions[this.grid[i]][0];
+      const b = snap.regions[other][0];
+      if (a < 0 || b < 0 || a === b || !wars.has(`${Math.min(a, b)}:${Math.max(a, b)}`)) continue;
       const x = i % W;
-      if ((x + (i - x) / W) % 2) continue; // dithered
-      d[i * 4] = c[0];
-      d[i * 4 + 1] = c[1];
-      d[i * 4 + 2] = c[2];
-      d[i * 4 + 3] = 150;
+      const y = (i - x) / W;
+      // Dashed: bright and dark stretches in each side's own colour.
+      const c = rgb[a];
+      const k2 = ((x + y) >> 1) % 2 ? 1 : 0.55;
+      d[i * 4] = Math.min(255, c[0] * k2 + (k2 === 1 ? 40 : 0));
+      d[i * 4 + 1] = Math.min(255, c[1] * k2 + (k2 === 1 ? 40 : 0));
+      d[i * 4 + 2] = Math.min(255, c[2] * k2 + (k2 === 1 ? 40 : 0));
+      d[i * 4 + 3] = 255;
+      painted.push(i);
     }
-    ctx.putImageData(img, 0, 0);
+    // Repaint the area old and new seams cover.
+    let [x0, y0, x1, y1] = [W, this.map.height, -1, -1];
+    for (const i of [...this.frontPix, ...painted]) {
+      const x = i % W;
+      const y = (i - x) / W;
+      if (x < x0) x0 = x;
+      if (y < y0) y0 = y;
+      if (x > x1) x1 = x;
+      if (y > y1) y1 = y;
+    }
+    this.frontPix = painted;
+    if (x1 >= x0) ctx.putImageData(this.frontImg, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
   }
 
   /** Where a region's town (or the hub of its roads) is: the real city, else the label point. */
@@ -393,6 +644,8 @@ export class MapView {
 
   /** Repaints towns, economic buildings and roads when any of them changed. */
   private updateDevelopLayer(snap: Snapshot): void {
+    if (snap === this.developSnap) return;
+    this.developSnap = snap;
     let key = `${snap.roads.length}|`;
     for (const r of snap.regions) key += `${r[2]}${r[9]}${r[10]}${r[11]}${r[12]},`;
     if (key === this.developKey) return;
@@ -460,30 +713,228 @@ export class MapView {
     });
   }
 
-  /** Placement: valid regions tinted green, everything else dimmed. */
-  private updatePlaceLayer(valid: Set<number>): void {
-    const key = [...valid].sort((a, b) => a - b).join(',');
-    if (key === this.placeKey) return;
-    this.placeKey = key;
+  /** The middle of the border between two regions, on region `r`'s side (map pixels). */
+  private readonly borderPoints = new Map<number, [number, number]>();
+  borderPoint(r: number, o: number): [number, number] {
+    const key = r * 65536 + o;
+    let p = this.borderPoints.get(key);
+    if (p) return p;
     const W = this.map.width;
-    const ctx = this.placeLayer.getContext('2d') as CanvasRenderingContext2D;
-    const img = ctx.createImageData(W, this.map.height);
-    const d = img.data;
-    for (let i = 0; i < this.grid.length; i++) {
-      const o = i * 4;
-      if (valid.has(this.grid[i])) {
-        d[o] = 70;
-        d[o + 1] = 220;
-        d[o + 2] = 100;
-        d[o + 3] = 120;
-      } else {
-        d[o] = 8;
-        d[o + 1] = 11;
-        d[o + 2] = 14;
-        d[o + 3] = 140;
+    const pix: number[] = [];
+    for (const k of this.regionEdges[r]) {
+      const i = this.edges[k];
+      if ((this.grid[i] === r && this.edgeOther[k] === o) || (this.grid[i] === o && this.edgeOther[k] === r)) pix.push(i);
+    }
+    if (!pix.length) {
+      const a = this.map.regions[r];
+      const b = this.map.regions[o];
+      p = [(a.x * 2 + b.x) / 3, (a.y * 2 + b.y) / 3];
+    } else {
+      // The centroid, snapped onto the border itself (a curvy border's centroid can be off it).
+      const cx = pix.reduce((sum, i) => sum + (i % W), 0) / pix.length;
+      const cy = pix.reduce((sum, i) => sum + Math.floor(i / W), 0) / pix.length;
+      let best = pix[0];
+      let bestD = Infinity;
+      for (const i of pix) {
+        const d = (i % W - cx) ** 2 + (Math.floor(i / W) - cy) ** 2;
+        if (d < bestD) [best, bestD] = [i, d];
+      }
+      p = [best % W, Math.floor(best / W)];
+    }
+    this.borderPoints.set(key, p);
+    return p;
+  }
+
+  /** The border a unit standing in someone else's region attacks from (-1: none, middle). */
+  private sideOf(b: BlobRow, region: number, snap: Snapshot): number {
+    const nb = this.map.regions[region].neighbors;
+    if (b[12] >= 0 && nb.some((n) => n.id === b[12])) return b[12];
+    let best = -1;
+    let border = 0;
+    for (const n of nb) {
+      if (snap.regions[n.id][0] === b[1] && n.border > border) [best, border] = [n.id, n.border];
+    }
+    return best;
+  }
+
+  /** Where a building of this kind in this region stands (or will), in map pixels. */
+  private siteOf(region: number, kind: BuildingKind, row: Snapshot['regions'][number], done: boolean): [number, number] {
+    const r = this.map.regions[region];
+    if (kind === 'farm' || kind === 'mine' || kind === 'well' || kind === 'market') {
+      const n = row[9] + row[10] + row[11] + row[12] - (done ? 1 : 0);
+      const spot = this.spotsIn(region)[Math.max(0, n)];
+      if (spot) return [spot[0] + 1, spot[1]];
+    }
+    if (kind === 'city') {
+      const [tx, ty] = this.townAt(region);
+      return [tx + 7, ty - 4];
+    }
+    // Forts, barracks, factories, roads: the next free spot, clear of the unit tokens.
+    const spot = this.spotsIn(region)[row[9] + row[10] + row[11] + row[12]];
+    return spot ? [spot[0] + 1, spot[1]] : [r.x + 9, r.y - 8];
+  }
+
+  /** Construction sites: scaffolding where the building goes, the crane swinging. */
+  private drawSites(snap: Snapshot): void {
+    const ctx = this.ctx;
+    const [mx0, my0] = this.toMap(-40, -40);
+    const [mx1, my1] = this.toMap(this.canvas.clientWidth + 40, this.canvas.clientHeight + 40);
+    const frame = Math.floor(performance.now() / 500) % 2;
+    snap.regions.forEach((row, i) => {
+      if (row[6] < 0) return;
+      const r = this.map.regions[i];
+      if (r.x < mx0 || r.x > mx1 || r.y < my0 || r.y > my1) return;
+      const [x, y] = this.siteOf(i, BUILDING_KINDS[row[6]], row, false);
+      ctx.drawImage(MAP_ART.scaffold[frame], x - 3, y - 4);
+    });
+  }
+
+  /** Sea pixels that glint (x, y, phase), picked once from the terrain picture. */
+  private glints: Float32Array | null = null;
+  private clouds: Array<{ sprite: HTMLCanvasElement; x: number; y: number }> = [];
+  private ambientAt = performance.now();
+
+  private initAmbient(): void {
+    const W = this.map.width;
+    const H = this.map.height;
+    const c = offscreen(W, H);
+    const cx = c.getContext('2d') as CanvasRenderingContext2D;
+    cx.drawImage(this.terrain, 0, 0);
+    const img = cx.getImageData(0, 0, W, H).data;
+    const pts: number[] = [];
+    for (let tries = 0; pts.length < 700 * 3 && tries < 200000; tries++) {
+      const i = Math.floor(Math.random() * W * H);
+      const [r, g, b] = [img[i * 4], img[i * 4 + 1], img[i * 4 + 2]];
+      if (this.grid[i] === WATER && b > r + 25 && b > g) pts.push(i % W, Math.floor(i / W), Math.random() * Math.PI * 2);
+    }
+    this.glints = Float32Array.from(pts);
+    // Soft, dithered cloud shadows, a few across the map.
+    for (let k = 0; k < 6; k++) {
+      const w = 90 + Math.floor(Math.random() * 70);
+      const h = 34 + Math.floor(Math.random() * 20);
+      const sprite = offscreen(w, h);
+      const sx = sprite.getContext('2d') as CanvasRenderingContext2D;
+      sx.fillStyle = '#0b0f13';
+      const blobs = Array.from({ length: 5 }, () => [w * (0.2 + Math.random() * 0.6), h * (0.3 + Math.random() * 0.4), h * (0.25 + Math.random() * 0.25)]);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if ((x + y) % 2) continue;
+          if (blobs.some(([bx, by, br]) => (x - bx) ** 2 / 1.8 + (y - by) ** 2 < br * br)) sx.fillRect(x, y, 1, 1);
+        }
+      }
+      this.clouds.push({ sprite, x: Math.random() * W, y: Math.random() * H });
+    }
+  }
+
+  /** The living map: glinting water, cloud shadows, traffic on roads, smoke from chimneys. */
+  private drawAmbient(snap: Snapshot): void {
+    if (!this.glints) this.initAmbient();
+    const ctx = this.ctx;
+    const now = performance.now();
+    const dt = Math.min(100, now - this.ambientAt) / 1000;
+    this.ambientAt = now;
+    const [mx0, my0] = this.toMap(0, 0);
+    const [mx1, my1] = this.toMap(this.canvas.clientWidth, this.canvas.clientHeight);
+    const seen = (x: number, y: number, m = 0) => x >= mx0 - m && x <= mx1 + m && y >= my0 - m && y <= my1 + m;
+
+    // Water: a few pixels catch the light now and then.
+    const g = this.glints as Float32Array;
+    ctx.fillStyle = '#d6ecff';
+    for (let k = 0; k < g.length; k += 3) {
+      if (!seen(g[k], g[k + 1])) continue;
+      const a = Math.sin(now / 700 + g[k + 2]);
+      if (a < 0.6) continue;
+      ctx.globalAlpha = (a - 0.6) * 1.6;
+      ctx.fillRect(g[k], g[k + 1], 1, 1);
+    }
+
+    // Cloud shadows drifting east.
+    const W = this.map.width;
+    ctx.globalAlpha = 0.13;
+    for (const c of this.clouds) {
+      const x = ((c.x + now / 1000) % (W + 300)) - 150;
+      if (seen(x + c.sprite.width / 2, c.y + c.sprite.height / 2, 120)) ctx.drawImage(c.sprite, Math.round(x), Math.round(c.y));
+    }
+    ctx.globalAlpha = 1;
+
+    // Traffic: little carts shuttling along supplied roads.
+    for (const [a, b] of snap.roads) {
+      if (!(snap.regions[a][3] & 4) || !(snap.regions[b][3] & 4)) continue;
+      const [x0, y0] = this.townAt(a);
+      const [x1, y1] = this.townAt(b);
+      if (!seen((x0 + x1) / 2, (y0 + y1) / 2, 60)) continue;
+      const len = Math.hypot(x1 - x0, y1 - y0);
+      const carts = snap.regions[a][2] > 0 && snap.regions[b][2] > 0 ? 3 : 1 + ((a + b) % 2);
+      for (let k = 0; k < carts; k++) {
+        const t = ((now / 1000) * (5 / len) + k / carts + (a * 0.37 + b * 0.11)) % 2;
+        const f = t < 1 ? t : 2 - t;
+        const x = Math.round(x0 + (x1 - x0) * f);
+        const y = Math.round(y0 + (y1 - y0) * f);
+        if (this.landOf(x, y) === WATER) continue;
+        ctx.fillStyle = '#2f2a24';
+        ctx.fillRect(x - 1, y - 1, 2, 1);
+        ctx.fillStyle = k % 2 ? '#d9a441' : '#e8e1d0';
+        ctx.fillRect(x, y - 1, 1, 1);
       }
     }
-    ctx.putImageData(img, 0, 0);
+
+    // Chimneys: factories, mines and towns smoke a little.
+    const smoke = (x: number, y: number, rate: number) => {
+      if (Math.random() < dt * rate) this.fx.add({ kind: 'puff', x, y, vx: 1.5, vy: -4, life: 2600, size: 2, color: '#d0d4d6', ambient: true });
+    };
+    snap.regions.forEach((row, i) => {
+      const r = this.map.regions[i];
+      if (!seen(r.x, r.y, 40)) return;
+      if (row[3] & 2) smoke(r.x + 6, r.y - 2, 0.8);
+      if (row[2] >= 2) {
+        const [tx, ty] = this.townAt(i);
+        smoke(tx, ty - 2, 0.25 * row[2]);
+      }
+      if (row[10] > 0) {
+        const spots = this.spotsIn(i);
+        const n = row[9];
+        for (let k = 0; k < row[10]; k++) {
+          const spot = spots[n + k];
+          if (spot) smoke(spot[0] + 2, spot[1] - 1, 0.5);
+        }
+      }
+    });
+  }
+
+  /** A building finished: a flash and a puff of dust where it stands. */
+  built(region: number, kind: BuildingKind, row: Snapshot['regions'][number]): void {
+    const [x, y] = this.siteOf(region, kind, row, true);
+    this.fx.add({ kind: 'flash', x: x + 2, y: y - 1, vx: 0, vy: 0, life: 350, size: 6, color: '#ffffff' });
+    for (let k = 0; k < 6; k++) {
+      this.fx.add({ kind: 'dust', x: x + Math.random() * 5, y: y + 2, vx: (Math.random() - 0.5) * 8, vy: -2 - Math.random() * 3, life: 700, size: 1, color: '#c8b892' });
+    }
+  }
+
+  /** Placement: valid regions tinted green, everything else dimmed (changed regions only). */
+  private updatePlaceLayer(valid: Set<number>): void {
+    const W = this.map.width;
+    const ctx = this.placeLayer.getContext('2d') as CanvasRenderingContext2D;
+    if (!this.placeImg) {
+      // Everything starts dimmed, water included.
+      this.placeImg = ctx.createImageData(W, this.map.height);
+      const d = this.placeImg.data;
+      for (let o = 0; o < d.length; o += 4) d.set([8, 11, 14, 140], o);
+      ctx.putImageData(this.placeImg, 0, 0);
+    }
+    const d = this.placeImg.data;
+    let [x0, y0, x1, y1] = [W, this.map.height, -1, -1];
+    for (let r = 0; r < this.shownValid.length; r++) {
+      const on = valid.has(r) ? 1 : 0;
+      if (on === this.shownValid[r]) continue;
+      this.shownValid[r] = on;
+      for (const p of this.regionPixels[r]) d.set(on ? [70, 220, 100, 120] : [8, 11, 14, 140], p * 4);
+      const o = r * 4;
+      x0 = Math.min(x0, this.regionBox[o]);
+      y0 = Math.min(y0, this.regionBox[o + 1]);
+      x1 = Math.max(x1, this.regionBox[o + 2]);
+      y1 = Math.max(y1, this.regionBox[o + 3]);
+    }
+    if (x1 >= x0) ctx.putImageData(this.placeImg, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
   }
 
   private updateHighlight(region: number): void {
@@ -528,7 +979,8 @@ export class MapView {
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;
     this.clampCamera(w, h);
-    this.updateTerritory(snap.regions, players);
+    this.updateTerritory(snap, players);
+    this.animateSweeps(performance.now());
     const place = this.placement;
     const lit = place ? (place.valid.has(place.hover) ? place.hover : -1) : selectedRegion;
     this.updateHighlight(lit);
@@ -552,6 +1004,10 @@ export class MapView {
     ctx.imageSmoothingEnabled = this.cam.scale < 1;
     ctx.drawImage(this.developLayer, 0, 0);
     ctx.imageSmoothingEnabled = false;
+    this.updateFrontLayer(snap, players);
+    ctx.drawImage(this.frontLayer, 0, 0);
+    this.drawSites(snap);
+    if (this.fx.level === 'full') this.drawAmbient(snap);
     if (showSupply) ctx.drawImage(this.supplyLayer, 0, 0);
     if (place) {
       this.updatePlaceLayer(place.valid);
@@ -571,6 +1027,7 @@ export class MapView {
       }
     }
     this.drawBlobs(snap, players, selected, you);
+    this.drawPending(players, you);
 
     if (box) {
       const [x0, y0] = [Math.round(Math.min(box[0], box[2])), Math.round(Math.min(box[1], box[3]))];
@@ -593,17 +1050,26 @@ export class MapView {
   private drawGrid(w: number, h: number): void {
     const ctx = this.ctx;
     const step = 60; // map pixels (180 km)
-    ctx.fillStyle = 'rgba(79,209,255,0.10)';
     const [mx0, my0] = this.toMap(0, 0);
     const [mx1, my1] = this.toMap(w, h);
+    // Dotted lines: two stroked paths, not one rectangle per dot.
+    ctx.save();
+    ctx.strokeStyle = 'rgba(79,209,255,0.10)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
     for (let mx = Math.ceil(mx0 / step) * step; mx <= mx1; mx += step) {
-      const x = Math.round(this.toScreen(mx, 0)[0]);
-      for (let y = 0; y < h; y += 6) ctx.fillRect(x, y, 1, 3);
+      const x = Math.round(this.toScreen(mx, 0)[0]) + 0.5;
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
     }
     for (let my = Math.ceil(my0 / step) * step; my <= my1; my += step) {
-      const y = Math.round(this.toScreen(0, my)[1]);
-      for (let x = 0; x < w; x += 6) ctx.fillRect(x, y, 3, 1);
+      const y = Math.round(this.toScreen(0, my)[1]) + 0.5;
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
     }
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawRegions(snap: Snapshot, players: GamePlayer[], you: number | null): void {
@@ -696,48 +1162,118 @@ export class MapView {
     const byRegion = new Map<number, BlobRow[]>();
     for (const b of snap.blobs) byRegion.set(b[6], [...(byRegion.get(b[6]) ?? []), b]);
 
-    // Individual tokens if zoomed in and they fit, else one stack per country for its parked
-    // units and one per next region for its units on the move.
+    // Individual tokens if zoomed in and they fit, else stacks. A region's own units (and units
+    // on their way out) stand in the middle; units in a region their country doesn't hold are
+    // attacking or taking it, and stand on the border they crossed, one group per border.
     const items: Item[] = [];
     const step = Math.max(FRAME_W * px, PLATE_MIN_W) + 3;
     const sideGap = 14 * px;
     const swords: Array<[number, number]> = [];
+    const attacks: Array<{ owner: number; region: number; side: number; items: Item[]; swords?: boolean }> = [];
+    const slot = (key: string, rows: BlobRow[], owner: number, moving: boolean, group: string, single: boolean) => {
+      const pinned = group === this.expanded;
+      if (single || pinned || rows.length === 1) return rows.map((b) => ({ key: `b:${b[0]}`, rows: [b], owner, moving, group, pinned }));
+      return [{ key, rows, owner, moving, group, pinned: false }];
+    };
     for (const [region, list] of byRegion) {
       const reg = this.map.regions[region];
-      const byOwner = new Map<number, BlobRow[]>();
-      for (const b of [...list].sort((a, b) => b[3] - a[3])) byOwner.set(b[1], [...(byOwner.get(b[1]) ?? []), b]);
-      const owners = [...byOwner.keys()].sort((a, b) => (a === you ? -1 : b === you ? 1 : a - b));
-      const fits = list.length * step + (owners.length - 1) * sideGap <= Math.sqrt(reg.area) * scale * 0.9;
+      const holder = snap.regions[region][0];
+      const fits = list.length * step <= Math.sqrt(reg.area) * scale * 0.9;
       const single = px >= 2 && fits;
-      const slots: Array<{ key: string; rows: BlobRow[]; owner: number; moving: boolean; group: string; pinned?: boolean }> = [];
+      const sorted = [...list].sort((a, b) => b[3] - a[3]);
+      // The middle: the holder's units, and anyone's units on their way out.
+      const middle: Array<{ key: string; rows: BlobRow[]; owner: number; moving: boolean; group: string; pinned?: boolean }> = [];
+      const attackers = new Map<string, { owner: number; side: number; rows: BlobRow[] }>();
+      const owners = [...new Set(sorted.map((b) => b[1]))].sort((a, b) => (a === you ? -1 : b === you ? 1 : a - b));
       for (const o of owners) {
-        const rows = byOwner.get(o) as BlobRow[];
-        const groups: Array<[string, BlobRow[], boolean]> = [];
+        const rows = sorted.filter((b) => b[1] === o);
         const parked = rows.filter((b) => !transit(b));
-        if (parked.length) groups.push([`s:${o}:${region}`, parked, false]);
         const going = new Map<number, BlobRow[]>();
         for (const b of rows) if (transit(b)) going.set(b[7], [...(going.get(b[7]) ?? []), b]);
-        for (const [next, g] of going) groups.push([`t:${o}:${region}:${next}`, g, true]);
-        for (const [group, g, moving] of groups) {
-          const pinned = group === this.expanded;
-          if (single || pinned || g.length === 1) {
-            for (const b of g) slots.push({ key: `b:${b[0]}`, rows: [b], owner: o, moving, group, pinned });
-          } else slots.push({ key: group, rows: g, owner: o, moving, group });
+        if (o === holder) {
+          if (parked.length) middle.push(...slot(`s:${o}:${region}`, parked, o, false, `s:${o}:${region}`, single));
+        } else {
+          for (const b of parked) {
+            const side = this.sideOf(b, region, snap);
+            if (side < 0) {
+              middle.push(...slot(`s:${o}:${region}`, [b], o, false, `s:${o}:${region}`, single));
+              continue;
+            }
+            const k = `${o}:${side}`;
+            const g = attackers.get(k) ?? { owner: o, side, rows: [] };
+            g.rows.push(b);
+            attackers.set(k, g);
+          }
+        }
+        for (const [next, g] of going) middle.push(...slot(`t:${o}:${region}:${next}`, g, o, true, `t:${o}:${region}:${next}`, single));
+      }
+      // Defenders under attack carry a shield with what helps them hold.
+      const besieged = sorted.some((b) => b[1] !== holder && !transit(b) && holder >= 0 && atWar(b[1], holder));
+      if (besieged) {
+        const river = sorted.some((b) => b[1] !== holder && (b[11] & 2) !== 0);
+        for (const sl of middle) {
+          if (sl.owner === holder && !sl.moving) {
+            (sl as Item).shield = { fort: snap.regions[region][1], dug: sl.rows.some((b) => b[9] >= 0.5), river };
+          }
         }
       }
-      const width = slots.length * step + (owners.length - 1) * sideGap;
+      // Lay out the middle row under the label.
+      let width = middle.length * step;
+      for (let i = 1; i < middle.length; i++) if (middle[i].owner !== middle[i - 1].owner) width += sideGap;
       let x = -width / 2 + step / 2;
       let prev = -2;
-      for (const slot of slots) {
-        if (prev !== -2 && slot.owner !== prev) {
-          // Crossed swords between two sides at war.
-          if (atWar(prev, slot.owner)) swords.push([reg.x + (x - step / 2 + sideGap / 2) / scale, reg.y + 14 / scale]);
-          x += sideGap;
-        }
-        items.push({ ...slot, tx: reg.x + x / scale, ty: reg.y + 14 / scale });
+      for (const sl of middle) {
+        if (prev !== -2 && sl.owner !== prev) x += sideGap;
+        items.push({ ...sl, tx: reg.x + x / scale, ty: reg.y + 14 / scale });
         x += step;
-        prev = slot.owner;
+        prev = sl.owner;
       }
+      // Each attacking group on its border.
+      const hasMiddle = middle.some((sl) => !sl.moving);
+      // One crossed swords per fight: beside the arrow of the biggest attack on defenders,
+      // or between two warring groups over land nobody here holds.
+      let fight: [number, number] | null = null;
+      let biggest: (typeof attacks)[number] | null = null;
+      let fightBy = 0;
+      for (const g of attackers.values()) {
+        let [bx, by] = this.borderPoint(region, g.side);
+        // A small region on screen: stand further back on the line of attack, so the arrow
+        // fits between the attackers and the middle.
+        const [mx, my] = [reg.x, reg.y + 14 / scale];
+        const need = (FRAME_W * px + 12 * px + (ARROW_LEN - 4) * px) / scale;
+        if (Math.hypot(bx - mx, by - my) < need) {
+          const from = this.map.regions[g.side];
+          let [dx, dy] = [bx - mx, by - my];
+          if (Math.hypot(dx, dy) < 1 / scale) [dx, dy] = [from.x - reg.x, from.y - reg.y];
+          const d = Math.hypot(dx, dy) || 1;
+          [bx, by] = [mx + (dx / d) * need, my + (dy / d) * need];
+        }
+        const group = `a:${g.owner}:${region}:${g.side}`;
+        const slots = slot(group, g.rows, g.owner, false, group, single);
+        const w = slots.length * step;
+        const made: Item[] = [];
+        slots.forEach((sl, i) => {
+          const it = { ...sl, tx: bx + (-w / 2 + step / 2 + i * step) / scale, ty: by };
+          items.push(it);
+          made.push(it);
+        });
+        const at = { owner: g.owner, region, side: g.side, items: made };
+        attacks.push(at);
+        const defended = middle.some((sl) => !sl.moving && atWar(sl.owner, g.owner));
+        if (hasMiddle && defended && g.rows.length > fightBy) [fightBy, biggest] = [g.rows.length, at];
+      }
+      if (biggest) biggest.swords = true;
+      // Fights over land nobody here holds: swords between two warring border groups.
+      const groups = [...attackers.values()];
+      for (let i = 0; i < groups.length && !fight && !biggest; i++) {
+        for (let j = i + 1; j < groups.length && !fight; j++) {
+          if (!atWar(groups[i].owner, groups[j].owner)) continue;
+          const [ax, ay] = this.borderPoint(region, groups[i].side);
+          const [cx, cy] = this.borderPoint(region, groups[j].side);
+          fight = [(ax + cx) / 2, (ay + cy) / 2];
+        }
+      }
+      if (fight) swords.push(this.toScreen(...fight));
     }
 
     this.declutter(items, step, FRAME_H * px + 4 * px + plateHeight(px));
@@ -745,14 +1281,67 @@ export class MapView {
     // The expanded stack goes on top.
     items.sort((a, b) => Number(a.pinned ?? false) - Number(b.pinned ?? false));
 
+    // Hops: a unit that just entered the next region glides there quickly from where it was.
+    for (const it of items) {
+      let glide: { x: number; y: number; start: number } | undefined;
+      for (const b of it.rows) {
+        const was = this.lastRegion.get(b[0]);
+        const from = this.lastDrawn.get(b[0]);
+        if (was !== undefined && was !== b[6] && from) this.glides.set(b[0], { x: from[0], y: from[1], start: now });
+        glide ??= this.glides.get(b[0]);
+      }
+      if (!glide) continue;
+      const t = (now - glide.start) / GLIDE_MS;
+      if (t >= 1) {
+        for (const b of it.rows) this.glides.delete(b[0]);
+        // Landing: a little dust.
+        const foot = (FRAME_H * px) / 2 / scale;
+        for (let i = 0; i < 4; i++) {
+          this.fx.add({ kind: 'dust', x: it.tx + (Math.random() - 0.5) * (FRAME_W * px) / scale, y: it.ty + foot, vx: (Math.random() - 0.5) * 6, vy: -2, life: 450, size: 1, color: '#b8a98a' });
+        }
+        continue;
+      }
+      const e = 1 - (1 - t) ** 3;
+      it.tx = glide.x + (it.tx - glide.x) * e;
+      it.ty = glide.y + (it.ty - glide.y) * e;
+    }
+    this.lastRegion = new Map(snap.blobs.map((b) => [b[0], b[6]]));
+    const drawn = new Map<number, [number, number]>();
+    for (const it of items) for (const b of it.rows) drawn.set(b[0], [it.tx, it.ty]);
+    this.lastDrawn = drawn;
+    const phase = now / 60;
+
     // Routes (yours) and next-hop arrows (everyone else's), under the tokens.
     const routes = new Map(snap.routes.map((r) => [r[0], r.slice(1)]));
     /** Destination region → heading there with a selected unit. */
     const destinations = new Map<number, boolean>();
+    // Regions with a fight in them (units of two sides at war standing there).
+    const contested = new Set<number>();
+    {
+      const standing = new Map<number, Set<number>>();
+      for (const b of snap.blobs) if (!transit(b)) standing.set(b[6], (standing.get(b[6]) ?? new Set()).add(b[1]));
+      for (const [r, o] of standing) {
+        const list = [...o];
+        if (list.some((a) => list.some((c) => a !== c && atWar(a, c)))) contested.add(r);
+      }
+    }
     for (const it of items) {
       if (!it.moving) continue;
       const [sx, sy] = this.toScreen(it.tx, it.ty);
       const color = colorOf(players, it.owner);
+      // Pulling out of a fight, back to its own land or the way it came: a grey retreat arrow.
+      const b0 = it.rows[0];
+      if (contested.has(b0[6]) && b0[7] >= 0 && (snap.regions[b0[7]][0] === it.owner || b0[7] === b0[12])) {
+        const [nx, ny] = this.toScreen(...this.borderPoint(b0[6], b0[7]));
+        const d = Math.hypot(nx - sx, ny - sy);
+        if (d > 4 * px) {
+          const ux = (nx - sx) / d;
+          const uy = (ny - sy) / d;
+          const st = (FRAME_W * px) / 2 + 2 * px;
+          drawArrow(ctx, sx + ux * st, sy + uy * st, ux, uy, '#9aa3a9', px, 0.75);
+        }
+        if (it.owner !== you) continue;
+      }
       if (it.owner === you) {
         const sel = it.rows.some((b) => selected.has(b[0]));
         const drawn = new Set<string>();
@@ -768,7 +1357,7 @@ export class MapView {
           for (const r of route) {
             const reg = this.map.regions[r];
             const [bx, by] = this.toScreen(reg.x, reg.y);
-            dottedLine(ctx, ax, ay, bx, by + 14, color, px);
+            dottedLine(ctx, ax, ay, bx, by + 14, color, px, phase);
             [ax, ay] = [bx, by + 14];
           }
           ctx.globalAlpha = 1;
@@ -790,22 +1379,143 @@ export class MapView {
         ctx.globalAlpha = 1;
       }
     }
+    // Attack arrows: from each attacking group, pointing the way it attacks (from the border
+    // it crossed toward the middle), even if a crowded screen pushed the group aside.
+    const shown = new Set(items);
+    for (const at of attacks) {
+      const here = at.items.filter((it) => shown.has(it));
+      if (!here.length) continue;
+      const gx = here.reduce((sum, it) => sum + it.tx, 0) / here.length;
+      const gy = here.reduce((sum, it) => sum + it.ty, 0) / here.length;
+      const reg = this.map.regions[at.region];
+      const [sx, sy] = this.toScreen(gx, gy);
+      const [bx, by] = this.toScreen(...this.borderPoint(at.region, at.side));
+      const [ex, ey] = this.toScreen(reg.x, reg.y + 14 / scale);
+      let dx = ex - bx;
+      let dy = ey - by;
+      if (Math.hypot(dx, dy) < 2) {
+        // The border sits on the middle: point away from the side region instead.
+        const from = this.map.regions[at.side];
+        [dx, dy] = [reg.x - from.x, reg.y - from.y];
+      }
+      const d = Math.hypot(dx, dy) || 1;
+      const ux = dx / d;
+      const uy = dy / d;
+      // The tail tucks under the group; the head points at the middle.
+      const start = (FRAME_W * px) / 2 - 3 * px;
+      drawArrow(ctx, sx + ux * start, sy + uy * start, ux, uy, colorOf(players, at.owner), px);
+      if (at.swords) {
+        // Beside the arrow's middle, on its upper side, clear of the shaft.
+        const [nx, ny] = ux >= 0 ? [uy, -ux] : [-uy, ux];
+        const mid = start + (ARROW_LEN * px) / 2;
+        const off = 13 * px;
+        swords.push([sx + ux * mid + nx * off, sy + uy * mid + ny * off]);
+      }
+    }
     const blink = Math.floor(now / 300) % 2;
-    for (const [wx, wy] of swords) {
-      const [x, y] = this.toScreen(wx, wy);
+    for (const [x, y] of swords) {
       blitCentred(ctx, ICONS.swords[blink], Math.round(x), Math.round(y), px);
     }
+
+    this.battleEffects(snap, items, now, px);
+    const toScreen = (x: number, y: number) => this.toScreen(x, y);
+    this.fx.draw(ctx, toScreen, px, now);
 
     // Tokens and stacks.
     const placed: Placed[] = [];
     const r = (FRAME_W * px) / 2;
     for (const it of items) {
       const [x, y] = this.toScreen(it.tx, it.ty);
-      const p = { ids: it.rows.map((b) => b[0]), x: Math.round(x), y: Math.round(y), r, group: it.group, stack: it.rows.length > 1 };
-      this.drawItem(it, p, players, it.rows.some((b) => selected.has(b[0])), px);
+      // Just took losses: a short shake.
+      const shake = it.rows.some((b) => (this.shaking.get(b[0]) ?? 0) > now) ? (Math.floor(now / 40) % 2 ? px : -px) : 0;
+      const p = { ids: it.rows.map((b) => b[0]), x: Math.round(x) + shake, y: Math.round(y), r, group: it.group, stack: it.rows.length > 1 };
+      this.drawItem(it, p, players, it.rows.some((b) => selected.has(b[0])), px, now);
       placed.push(p);
     }
     this.placed = placed;
+  }
+
+  /** When each fight on screen fires its next artillery round. */
+  private readonly nextBoom = new Map<number, number>();
+
+  /** Fights on screen: tracers, muzzle flashes, smoke and artillery. */
+  private battleEffects(snap: Snapshot, items: Item[], now: number, px: number): void {
+    const dt = Math.min(100, now - this.frameAt) / 1000;
+    this.frameAt = now;
+    const scale = this.cam.scale;
+    const atWar = (a: number, b: number) => snap.wars.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
+    const byRegion = new Map<number, Item[]>();
+    for (const it of items) {
+      if (it.moving) continue;
+      const r = it.rows[0][6];
+      byRegion.set(r, [...(byRegion.get(r) ?? []), it]);
+    }
+    const W = this.map.width;
+    const cw = this.canvas.clientWidth;
+    const chh = this.canvas.clientHeight;
+    const rand = <T>(list: T[]) => list[Math.floor(Math.random() * list.length)];
+    let fights = 0;
+    for (const [r, list] of byRegion) {
+      const owners = [...new Set(list.map((it) => it.owner))];
+      const pairs: Array<[Item, Item]> = [];
+      for (const a of list) for (const b of list) if (a.owner < b.owner && atWar(a.owner, b.owner)) pairs.push([a, b]);
+      if (!pairs.length || owners.length < 2) continue;
+      const pts = list.map((it) => this.toScreen(it.tx, it.ty));
+      const minX = Math.min(...pts.map((p) => p[0]));
+      const maxX = Math.max(...pts.map((p) => p[0]));
+      const minY = Math.min(...pts.map((p) => p[1]));
+      const maxY = Math.max(...pts.map((p) => p[1]));
+      const cy = (minY + maxY) / 2;
+      const cx = (minX + maxX) / 2;
+      if (cx < -80 || cy < -80 || cx > cw + 80 || cy > chh + 80) continue;
+      fights++;
+
+      // Tracers between the sides, muzzle flashes and gun smoke.
+      if (Math.random() < dt / 0.25) {
+        const [a, b] = rand(pairs);
+        const [from, to] = Math.random() < 0.5 ? [a, b] : [b, a];
+        this.fx.add({ kind: 'tracer', x: from.tx, y: from.ty, x2: to.tx, y2: to.ty, vx: 0, vy: 0, life: 260, size: 1, color: '#fff1a8' });
+      }
+      if (Math.random() < dt * 10 && this.fx.allow()) {
+        const it = rand(list);
+        const jx = ((Math.random() - 0.5) * FRAME_W * px * 1.8) / scale;
+        const jy = ((Math.random() - 0.5) * FRAME_H * px * 1.2) / scale;
+        this.fx.add({ kind: 'spark', x: it.tx + jx, y: it.ty + jy, vx: 0, vy: 0, life: 130, size: 2, color: Math.random() < 0.5 ? '#fff3a0' : '#ffffff' });
+      }
+      if (Math.random() < dt * 2.5 && this.fx.allow()) {
+        const it = rand(list);
+        this.fx.add({ kind: 'smoke', x: it.tx + ((Math.random() - 0.5) * 24 * px) / scale, y: it.ty - (8 * px) / scale, vx: 3, vy: -6, life: 1900, size: 3, color: '#a3a9ad' });
+      }
+      // Artillery: now and then a shell lands somewhere in the region.
+      const due = this.nextBoom.get(r) ?? now + 600 + Math.random() * 1800;
+      if (now >= due) {
+        const pix = this.regionPixels[r];
+        const i = pix[Math.floor(Math.random() * pix.length)];
+        const x = i % W;
+        const y = (i - x) / W;
+        this.fx.add({ kind: 'boom', x, y, vx: 0, vy: 0, life: 560, size: 7, color: '#ff9a3c' });
+        for (let k = 0; k < 3; k++) {
+          this.fx.add({ kind: 'smoke', x: x + (Math.random() - 0.5) * 2, y, vx: 1 + Math.random() * 2, vy: -3 - Math.random() * 3, born: now + 120 + k * 90, life: 2100, size: 4, color: '#5a5f63' });
+        }
+        this.sounds?.boom(Math.min(1, scale / 2));
+        this.nextBoom.set(r, now + 2000 + Math.random() * 2000);
+      } else this.nextBoom.set(r, due);
+    }
+    // Small-arms fire for the fights on screen, a few crackles a second at most.
+    if (fights && Math.random() < dt * Math.min(6, 2 * fights)) this.sounds?.gun(Math.min(1, 0.35 + 0.1 * fights) * Math.min(1, scale / 1.5));
+  }
+
+  /** Losses since the last snapshot: the unit shakes. */
+  noteLosses(prev: Snapshot, next: Snapshot): void {
+    const before = new Map(prev.blobs.map((b) => [b[0], b[3]]));
+    const owners = new Map<number, Set<number>>();
+    for (const b of next.blobs) if (b[8] === 0) owners.set(b[6], (owners.get(b[6]) ?? new Set()).add(b[1]));
+    const now = performance.now();
+    for (const b of next.blobs) {
+      const was = before.get(b[0]);
+      if (was === undefined || (owners.get(b[6])?.size ?? 0) < 2 || was - b[3] <= 0) continue;
+      this.shaking.set(b[0], now + 300);
+    }
   }
 
   /**
@@ -826,7 +1536,15 @@ export class MapView {
     const gone = new Set<Item>();
     for (const it of onScreen) {
       const host = kept.find(
-        (k) => !k.pinned && !it.pinned && k.owner === it.owner && k.moving === it.moving && Math.abs(k.tx - it.tx) * scale < w * 0.9 && Math.abs(k.ty - it.ty) * scale < h * 0.9,
+        (k) =>
+          !k.pinned &&
+          !it.pinned &&
+          k.owner === it.owner &&
+          k.moving === it.moving &&
+          // An attack never folds into a stack elsewhere (its arrow would go with it).
+          k.group.startsWith('a:') === it.group.startsWith('a:') &&
+          Math.abs(k.tx - it.tx) * scale < w * 0.9 &&
+          Math.abs(k.ty - it.ty) * scale < h * 0.9,
       );
       if (host) {
         host.rows = [...host.rows, ...it.rows].sort((a, b) => b[3] - a[3]);
@@ -865,6 +1583,29 @@ export class MapView {
       }
       if (!moved) break;
     }
+  }
+
+  /** Stand-ins for orders on their way to the server: a route line and building ghosts. */
+  private drawPending(players: GamePlayer[], you: number | null): void {
+    const ctx = this.ctx;
+    const px = this.pixel();
+    const color = you === null ? '#ffffff' : colorOf(players, you);
+    const move = this.pending.move;
+    if (move) {
+      const [tx, ty] = this.toScreen(...this.townAt(move.to));
+      for (const id of move.ids) {
+        const at = this.screenOfUnit(id);
+        if (at) dottedLine(ctx, at[0], at[1], tx, ty + 14, color, px);
+      }
+      destArrow(ctx, Math.round(tx), Math.round(ty + 14 - (FRAME_H * px) / 2 - 2 * px), color, px + 1);
+    }
+    ctx.globalAlpha = 0.6;
+    for (const b of this.pending.builds) {
+      const r = this.map.regions[b.region];
+      const [x, y] = this.toScreen(r.x, r.y);
+      blitCentred(ctx, ICONS[b.kind], Math.round(x), Math.round(y - 10 * px), px + 1);
+    }
+    ctx.globalAlpha = 1;
   }
 
   /** The minimap: the whole map small, your view as a cyan box, battles as red dots. */
@@ -916,67 +1657,19 @@ export class MapView {
    * (with a "deck" of frames behind for a stack), a strength bar, the strength number and,
    * for a stack, how many units are in it.
    */
-  private drawItem(it: Item, p: Placed, players: GamePlayer[], selected: boolean, px: number): void {
+  private drawItem(it: Item, p: Placed, players: GamePlayer[], selected: boolean, px: number, now: number): void {
     const ctx = this.ctx;
     const rows = it.rows;
     const color = colorOf(players, rows[0][1]);
-    const byType = new Map<string, number>();
-    for (const b of rows) byType.set(UNIT_INDEX[b[2]], (byType.get(UNIT_INDEX[b[2]]) ?? 0) + b[3]);
-    const type = ([...byType].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'infantry') as 'infantry' | 'tank';
-    const strength = rows.reduce((s, b) => s + b[3], 0);
-    const size = rows.reduce((s, b) => s + b[4], 0);
-    const supply = Math.min(...rows.map((b) => b[10]));
-    const training = rows.reduce((s, b) => s + b[5] * b[3], 0) / Math.max(1, strength);
     const w = FRAME_W * px;
     const h = FRAME_H * px;
     const x0 = Math.round(p.x - w / 2);
     const y0 = Math.round(p.y - h / 2);
-
-    // The deck: up to two more frames peeking out behind (other types show as themselves).
-    for (let i = Math.min(2, rows.length - 1); i >= 1; i--) {
-      const b = rows[i];
-      const back = unitFrame(UNIT_INDEX[b[2]], b[4], UNITS[UNIT_INDEX[b[2]]].maxSize, color);
-      blit(ctx, back, x0 + 2 * i * px, y0 - 2 * i * px, px);
-    }
-    blit(ctx, unitFrame(type, rows[0][4], UNITS[type].maxSize, color), x0, y0, px);
-
-    // Strength bar under the frame: 5 cells.
-    const share = strength / Math.max(1, size);
-    const by = y0 + h + px;
-    ctx.fillStyle = INK;
-    ctx.fillRect(x0, by - px, w, 3 * px);
-    for (let i = 0; i < 5; i++) {
-      const filled = share > i / 5 + 0.02;
-      ctx.fillStyle = filled ? (share > 0.6 ? '#7bd389' : share > 0.3 ? '#f1c232' : '#ff5a5a') : '#2c3a44';
-      ctx.fillRect(x0 + px + i * 3 * px, by, 2 * px + (i === 4 ? px : 0), px);
-    }
-
-    // Strength number below, in pixel digits with a thin dark outline.
-    outlinedDigits(ctx, String(Math.ceil(strength)), p.x, by + 2 * px + plateHeight(px) / 2, digitScale(px));
-
-    // A stack: how many units, top right (×N).
-    if (rows.length > 1) {
-      const cx = x0 + w + 2 * px + 2 * px * Math.min(2, rows.length - 1);
-      const cy = y0 - 2 * px * Math.min(2, rows.length - 1) + 2 * px;
-      countBadge(ctx, rows.length, cx, cy, px);
-    }
-
-    // Supply: amber/red block in the top-right corner of the frame.
-    if (supply < 0.99) {
-      ctx.fillStyle = INK;
-      ctx.fillRect(x0 + w - 4 * px, y0 + 3 * px, 4 * px, 4 * px);
-      ctx.fillStyle = supply <= 0 ? '#ff5a5a' : '#ffb347';
-      ctx.fillRect(x0 + w - 3 * px, y0 + 4 * px, 2 * px, 2 * px);
-    }
-    // Training: gold chevrons to the left of the echelon marks.
-    const chevrons = Math.floor(training / 34);
-    for (let i = 0; i < chevrons; i++) {
-      const cx = x0 + i * 4 * px;
-      ctx.fillStyle = '#f1c232';
-      ctx.fillRect(cx, y0 + px, px, px);
-      ctx.fillRect(cx + px, y0 + 2 * px, px, px);
-      ctx.fillRect(cx + 2 * px, y0 + px, px, px);
-    }
+    // Everything but the live bits comes from a cached bitmap: one drawImage per token.
+    // Idle motion: the pennant flutters (and a supply warning blinks) on each unit's own beat.
+    const beat = Math.floor((now + rows[0][0] * 137) / 700) % 2;
+    const token = tokenSprite(rows, color, px, beat);
+    ctx.drawImage(token, p.x - TOKEN_AX * px, p.y - TOKEN_AY * px);
     // On the move: a bar of 5 cells left of the frame fills up until the hop to the next region.
     if (it.moving) {
       const progress = Math.min(1, Math.max(...rows.map((b) => b[8])));
@@ -989,11 +1682,140 @@ export class MapView {
         ctx.fillRect(bx, Math.round(y0 + h - px - (i + 1) * cell), px, Math.max(px, Math.round(cell) - px));
       }
     }
+    // Defenders under attack: a shield with fort level, dug in and river.
+    if (it.shield && !it.moving) {
+      const sh = shieldSprite(it.shield.fort, it.shield.dug, it.shield.river);
+      blit(ctx, sh, x0 - (sh.width + 1) * px, y0 + px, px);
+    }
     // Selected: blinking corner brackets.
     if (selected && Math.floor(performance.now() / 400) % 2 === 0) {
       brackets(ctx, Math.round(p.x), Math.round(y0 + h / 2 + 2 * px), w / 2 + 2 * px, '#ffffff', px);
     }
   }
+}
+
+const shieldCache = new Map<string, HTMLCanvasElement>();
+/** A defender's shield: fort pips at the top, a blue wave for a river, a brown bar if dug in. */
+function shieldSprite(fort: number, dug: boolean, river: boolean): HTMLCanvasElement {
+  const key = `${fort}${dug}${river}`;
+  let c = shieldCache.get(key);
+  if (c) return c;
+  const rows = ['OOOOOOO', 'OGGGGGO', 'OGGGGGO', 'OGGGGGO', 'OGGGGGO', 'OGGGGGO', '.OGGGO.', '..OGO..', '...O...'].map((r) => r.split(''));
+  for (let i = 0; i < Math.min(3, fort); i++) rows[2][1 + i * 2] = 'K';
+  if (river) {
+    rows[4][1] = 'B';
+    rows[4][3] = 'B';
+    rows[4][5] = 'B';
+    rows[3][2] = 'B';
+    rows[3][4] = 'B';
+  }
+  if (dug) for (let x = 2; x <= 4; x++) rows[6][x] = 'D';
+  c = art(
+    rows.map((r) => r.join('')),
+    { G: '#c9d1d6', K: '#3b4248', B: '#4fa3e0', D: '#8a6a3d' },
+  );
+  shieldCache.set(key, c);
+  return c;
+}
+
+/** A hop's quick glide into the next region. */
+const GLIDE_MS = 300;
+/** A captured region filling with its new colour. */
+const SWEEP_MS = 1000;
+
+/** Token bitmaps: the anchor (the token's centre) sits at (TOKEN_AX, TOKEN_AY) × px. */
+const TOKEN_AX = 40;
+const TOKEN_AY = 24;
+const tokenCache = new Map<string, HTMLCanvasElement>();
+
+/**
+ * A NATO symbol for one unit or a stack, drawn once and cached: the deck of frames behind,
+ * the framed branch symbol, a strength bar, the strength number, the ×N count for a stack,
+ * the supply mark and training chevrons.
+ */
+function tokenSprite(rows: BlobRow[], color: string, px: number, beat: number): HTMLCanvasElement {
+  const byType = new Map<string, number>();
+  for (const b of rows) byType.set(UNIT_INDEX[b[2]], (byType.get(UNIT_INDEX[b[2]]) ?? 0) + b[3]);
+  const type = ([...byType].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'infantry') as 'infantry' | 'tank';
+  const strength = rows.reduce((s, b) => s + b[3], 0);
+  const size = rows.reduce((s, b) => s + b[4], 0);
+  const supply = Math.min(...rows.map((b) => b[10]));
+  const training = rows.reduce((s, b) => s + b[5] * b[3], 0) / Math.max(1, strength);
+  const share = strength / Math.max(1, size);
+  const cellsOn = [0, 1, 2, 3, 4].filter((i) => share > i / 5 + 0.02).length;
+  const barColor = share > 0.6 ? '#7bd389' : share > 0.3 ? '#f1c232' : '#ff5a5a';
+  const supplyMark = supply >= 0.99 ? '' : supply <= 0 ? '#ff5a5a' : '#ffb347';
+  const chevrons = Math.floor(training / 34);
+  const deck = rows.slice(1, 3).map((b) => `${b[2]}.${b[4]}`).join(',');
+  const label = String(Math.ceil(strength));
+  const key = `${type}|${rows[0][4]}|${deck}|${color}|${label}|${rows.length}|${supplyMark}|${chevrons}|${cellsOn}${barColor}|${px}|${beat}`;
+  let c = tokenCache.get(key);
+  if (c) return c;
+  if (tokenCache.size > 1500) tokenCache.clear();
+  c = offscreen(TOKEN_AX * 2 * px, (TOKEN_AY + 36) * px);
+  const ctx = c.getContext('2d') as CanvasRenderingContext2D;
+  ctx.imageSmoothingEnabled = false;
+  const cx = TOKEN_AX * px;
+  const cy = TOKEN_AY * px;
+  const w = FRAME_W * px;
+  const h = FRAME_H * px;
+  const x0 = Math.round(cx - w / 2);
+  const y0 = Math.round(cy - h / 2);
+
+  // The deck: up to two more frames peeking out behind (other types show as themselves).
+  for (let i = Math.min(2, rows.length - 1); i >= 1; i--) {
+    const b = rows[i];
+    const back = unitFrame(UNIT_INDEX[b[2]], b[4], UNITS[UNIT_INDEX[b[2]]].maxSize, color);
+    blit(ctx, back, x0 + 2 * i * px, y0 - 2 * i * px, px);
+  }
+  blit(ctx, unitFrame(type, rows[0][4], UNITS[type].maxSize, color), x0, y0, px);
+
+  // Strength bar under the frame: 5 cells.
+  const by = y0 + h + px;
+  ctx.fillStyle = INK;
+  ctx.fillRect(x0, by - px, w, 3 * px);
+  for (let i = 0; i < 5; i++) {
+    ctx.fillStyle = i < cellsOn ? barColor : '#2c3a44';
+    ctx.fillRect(x0 + px + i * 3 * px, by, 2 * px + (i === 4 ? px : 0), px);
+  }
+
+  // Strength number below, in pixel digits with a thin dark outline.
+  outlinedDigits(ctx, label, cx, by + 2 * px + plateHeight(px) / 2, digitScale(px));
+
+  // A stack: how many units, top right (×N).
+  if (rows.length > 1) {
+    const bx = x0 + w + 2 * px + 2 * px * Math.min(2, rows.length - 1);
+    const bcy = y0 - 2 * px * Math.min(2, rows.length - 1) + 2 * px;
+    countBadge(ctx, rows.length, bx, bcy, px);
+  }
+
+  // Supply: amber/red block in the top-right corner of the frame (blinking).
+  if (supplyMark) {
+    ctx.fillStyle = INK;
+    ctx.fillRect(x0 + w - 4 * px, y0 + 3 * px, 4 * px, 4 * px);
+    ctx.fillStyle = beat ? shade(supplyMark, 0.55) : supplyMark;
+    ctx.fillRect(x0 + w - 3 * px, y0 + 4 * px, 2 * px, 2 * px);
+  }
+  // A small pennant on a staff at the top right, fluttering between two shapes.
+  ctx.fillStyle = INK;
+  ctx.fillRect(x0 + w - px, y0 - 3 * px, px, 4 * px);
+  ctx.fillStyle = shade(color, 1.3);
+  if (beat) {
+    ctx.fillRect(x0 + w, y0 - 3 * px, 2 * px, px);
+    ctx.fillRect(x0 + w + px, y0 - 2 * px, 2 * px, px);
+  } else {
+    ctx.fillRect(x0 + w, y0 - 3 * px, 3 * px, 2 * px);
+  }
+  // Training: gold chevrons to the left of the echelon marks.
+  for (let i = 0; i < chevrons; i++) {
+    const chx = x0 + i * 4 * px;
+    ctx.fillStyle = '#f1c232';
+    ctx.fillRect(chx, y0 + px, px, px);
+    ctx.fillRect(chx + px, y0 + 2 * px, px, px);
+    ctx.fillRect(chx + 2 * px, y0 + px, px, px);
+  }
+  tokenCache.set(key, c);
+  return c;
 }
 
 /** Room under each unit for its number; units in a row are at least this far apart. */
@@ -1010,12 +1832,34 @@ export interface SupplyInfo {
 }
 
 /** Pixel-font text with a 1px dark outline, at whole pixels. */
+const textCache = new Map<string, HTMLCanvasElement>();
+
 function pixelText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size: number, color: string): void {
-  ctx.font = `${size >= 12 ? 700 : 400} ${size}px "Pixelify Sans", monospace`;
+  const font = `${size >= 12 ? 700 : 400} ${size}px "Pixelify Sans", monospace`;
+  const key = `${font}|${color}|${text}`;
+  let c = textCache.get(key);
+  if (!c) {
+    // Until the pixel font has loaded, draw straight away (and don't cache the fallback).
+    if (!document.fonts.check(font)) {
+      paintText(ctx, font, text, Math.round(x), Math.round(y), color);
+      return;
+    }
+    if (textCache.size > 2000) textCache.clear();
+    ctx.font = font;
+    const w = Math.ceil(ctx.measureText(text).width) + 6;
+    const h = Math.ceil(size * 1.6) + 4;
+    c = offscreen(w, h);
+    paintText(c.getContext('2d') as CanvasRenderingContext2D, font, text, Math.round(w / 2), Math.round(h / 2), color);
+    textCache.set(key, c);
+  }
+  ctx.drawImage(c, Math.round(x) - Math.round(c.width / 2), Math.round(y) - Math.round(c.height / 2));
+}
+
+/** Pixel-font text with a 1px dark outline, centred on (x, y). */
+function paintText(ctx: CanvasRenderingContext2D, font: string, text: string, x: number, y: number, color: string): void {
+  ctx.font = font;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  const rx = Math.round(x);
-  const ry = Math.round(y);
   ctx.fillStyle = INK;
   for (const [dx, dy] of [
     [-1, 0],
@@ -1024,10 +1868,10 @@ function pixelText(ctx: CanvasRenderingContext2D, text: string, x: number, y: nu
     [0, 1],
     [1, 1],
   ]) {
-    ctx.fillText(text, rx + dx, ry + dy);
+    ctx.fillText(text, x + dx, y + dy);
   }
   ctx.fillStyle = color;
-  ctx.fillText(text, rx, ry);
+  ctx.fillText(text, x, y);
 }
 
 /** Pixel digits, white with a thin dark outline. */
@@ -1089,6 +1933,89 @@ function brackets(ctx: CanvasRenderingContext2D, x: number, y: number, half: num
   }
 }
 
+/** The attack arrow, in sprite cells: its length, the head's length and half-width. */
+const ARROW_LEN = 26;
+const ARROW_HEAD = 10;
+const ARROW_DIRS = 32;
+const arrowCache = new Map<string, { c: HTMLCanvasElement; ax: number; ay: number }>();
+
+/** Is (x, y), in the arrow's own frame (tail at the origin, pointing along +x), inside it? */
+function inArrow(x: number, y: number): boolean {
+  if (x < 0 || x > ARROW_LEN) return false;
+  const neck = ARROW_LEN - ARROW_HEAD;
+  if (x >= neck) return Math.abs(y) <= 7.5 * ((ARROW_LEN - x) / ARROW_HEAD);
+  // The shaft widens a little toward the head; the tail has a swallowtail notch.
+  const half = 2.5 + x / neck;
+  return Math.abs(y) <= half && x >= 2 * (1 - Math.abs(y) / half);
+}
+
+/**
+ * One HOI4-style arrow, rasterised once per direction (32 of them) and colour, in sprite
+ * cells so its pixels stay square: an outline, a body lit on top and shaded underneath, and
+ * a soft drop shadow. `ax, ay` is where the tail sits in the sprite.
+ */
+function arrowSprite(dir: number, color: string): { c: HTMLCanvasElement; ax: number; ay: number } {
+  const key = `${dir}|${color}`;
+  let hit = arrowCache.get(key);
+  if (hit) return hit;
+  const a = (dir / ARROW_DIRS) * Math.PI * 2;
+  const cos = Math.cos(a);
+  const sin = Math.sin(a);
+  const pad = 3;
+  const r = ARROW_LEN + 2;
+  const n = r * 2 + pad * 2;
+  const o = r + pad;
+  // Cell centres, turned back into the arrow's frame.
+  const fill = new Uint8Array(n * n);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const dx = x + 0.5 - o;
+      const dy = y + 0.5 - o;
+      if (inArrow(dx * cos + dy * sin, -dx * sin + dy * cos)) fill[y * n + x] = 1;
+    }
+  }
+  const at = (x: number, y: number) => x >= 0 && y >= 0 && x < n && y < n && fill[y * n + x] === 1;
+  const c = document.createElement('canvas');
+  c.width = n;
+  c.height = n;
+  const ctx = c.getContext('2d') as CanvasRenderingContext2D;
+  // The shadow (shape and outline, down and right), then the outline, then the body.
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (at(x - 2, y - 2) || at(x - 1, y - 2) || at(x - 2, y - 1)) ctx.fillRect(x, y, 1, 1);
+  ctx.fillStyle = INK;
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      if (at(x, y)) continue;
+      if (at(x - 1, y) || at(x + 1, y) || at(x, y - 1) || at(x, y + 1)) {
+        ctx.clearRect(x, y, 1, 1);
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+  }
+  const light = shade(color, 1.4);
+  const dark = shade(color, 0.7);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      if (!at(x, y)) continue;
+      ctx.clearRect(x, y, 1, 1);
+      ctx.fillStyle = !at(x, y - 1) ? light : !at(x, y + 1) ? dark : color;
+      ctx.fillRect(x, y, 1, 1);
+    }
+  }
+  hit = { c, ax: o, ay: o };
+  arrowCache.set(key, hit);
+  return hit;
+}
+
+/** Draws the attack arrow with its tail at (x, y), pointing along (ux, uy), `s` px per cell. */
+function drawArrow(ctx: CanvasRenderingContext2D, x: number, y: number, ux: number, uy: number, color: string, s: number, alpha = 1): void {
+  const dir = ((Math.round((Math.atan2(uy, ux) / (Math.PI * 2)) * ARROW_DIRS) % ARROW_DIRS) + ARROW_DIRS) % ARROW_DIRS;
+  const { c, ax, ay } = arrowSprite(dir, color);
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(c, Math.round(x - ax * s), Math.round(y - ay * s), c.width * s, c.height * s);
+  ctx.globalAlpha = 1;
+}
+
 /** A pixel arrow pointing down, its tip at (x, y): where your units are heading. */
 function destArrow(ctx: CanvasRenderingContext2D, x: number, y: number, color: string, px: number): void {
   // Rows from the top: a 3-wide shaft, then the head narrowing to the tip.
@@ -1135,11 +2062,12 @@ function cells(ctx: CanvasRenderingContext2D, x: number, y: number, progress: nu
 }
 
 /** A dotted line made of pixel squares. */
-function dottedLine(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string, px: number): void {
+/** Dots along a line; `phase` (in pixels) makes them march from (x0, y0) toward (x1, y1). */
+function dottedLine(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string, px: number, phase = 0): void {
   const len = Math.hypot(x1 - x0, y1 - y0);
   const step = 4 * px;
   ctx.fillStyle = color;
-  for (let d = step; d < len; d += step) {
+  for (let d = step - ((phase * px) % step); d < len; d += step) {
     const x = x0 + ((x1 - x0) * d) / len;
     const y = y0 + ((y1 - y0) * d) / len;
     ctx.fillRect(Math.round(x - px / 2), Math.round(y - px / 2), px, px);

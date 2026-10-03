@@ -278,6 +278,11 @@ export const MAP_ART = {
   mine: art(['.KKK.', '.K.K.', 'KKKKK', 'kkkkk'], LAND),
   well: art(['.K.', '.K.', 'KKK', 'K.K', 'KKK'], LAND),
   market: art(['AHAH', 'AHAH', 'HHHH', 'HdHH'], LAND),
+  /** Construction: scaffolding with a crane whose arm swings between two frames. */
+  scaffold: [
+    art(['KKKKK.', '..K...', 'Y.K...', 'YYKYY.', 'Y.K.Y.', 'YYYYY.'], { ...LAND, Y: '#d9a441' }),
+    art(['.KKKKK', '...K..', 'Y..K..', 'YYYKY.', 'Y..KY.', 'YYYYY.'], { ...LAND, Y: '#d9a441' }),
+  ],
 };
 export const ROAD_COLOR = '#c9b38a';
 export const ROAD_SHADE = '#6e5f48';
@@ -363,6 +368,7 @@ export function hudIcon(name: keyof typeof HUD, scale = 2): string {
 /** Classic 3×5 pixel digits: unambiguous at any scale (a font's 2 can look like an 8). */
 const DIGITS: Record<string, string[]> = {
   '0': ['###', '#.#', '#.#', '#.#', '###'],
+  '-': ['...', '...', '###', '...', '...'],
   '1': ['.#.', '##.', '.#.', '.#.', '###'],
   '2': ['###', '..#', '###', '#..', '###'],
   '3': ['###', '..#', '###', '..#', '###'],

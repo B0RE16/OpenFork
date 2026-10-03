@@ -31,6 +31,9 @@ export interface Blob {
   hold: boolean;
   /** Came into its region across a river (the defender there gets the river bonus). */
   crossedRiver: boolean;
+  /** The region it came into its region from (-1: it started there). A unit in a fight may
+   * only retreat: back there, or to its own land. */
+  from: number;
   /** 0..1, set by the supply pass. */
   supply: number;
 }
