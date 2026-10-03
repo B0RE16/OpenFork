@@ -103,9 +103,9 @@ export class Fx {
           const [ex, ey] = toScreen(p.x2 ?? p.x, p.y2 ?? p.y);
           ctx.globalAlpha = 0.9;
           ctx.fillStyle = p.color;
-          const s = Math.max(1, Math.round(px));
-          for (let k = 0; k < 3; k++) {
-            const f = Math.max(0, age - k * 0.06);
+          const s = Math.max(2, Math.round(px) + 1);
+          for (let k = 0; k < 4; k++) {
+            const f = Math.max(0, age - k * 0.05);
             ctx.fillRect(Math.round(x + (ex - x) * f), Math.round(y + (ey - y) * f), s, s);
           }
           break;

@@ -671,7 +671,9 @@ export class MapView {
       const [tx, ty] = this.townAt(region);
       return [tx + 7, ty - 4];
     }
-    return [r.x + 9, r.y + 3];
+    // Forts, barracks, factories, roads: the next free spot, clear of the unit tokens.
+    const spot = this.spotsIn(region)[row[9] + row[10] + row[11] + row[12]];
+    return spot ? [spot[0] + 1, spot[1]] : [r.x + 9, r.y - 8];
   }
 
   /** Construction sites: scaffolding where the building goes, the crane swinging. */
@@ -1245,14 +1247,23 @@ export class MapView {
 
       // The command layer: a red ring pulsing out around the fight.
       const pulse = (now % 1200) / 1200;
-      const rx = (maxX - minX) / 2 + 16 * px + pulse * 6 * px;
-      const ry = 14 * px + pulse * 4 * px;
-      ctx.globalAlpha = 0.2 + 0.55 * (1 - pulse);
-      ctx.fillStyle = '#ff5a5a';
-      const n = Math.max(28, Math.round((rx + ry) / (1.5 * px)));
-      for (let k = 0; k < n; k++) {
-        const a = (k / n) * Math.PI * 2;
-        ctx.fillRect(Math.round(cx + Math.cos(a) * rx), Math.round(cy + Math.sin(a) * ry), px, px);
+      const rx = (maxX - minX) / 2 + 18 * px + pulse * 8 * px;
+      const ry = 16 * px + pulse * 5 * px;
+      const dot = px + 1;
+      const n = Math.max(48, Math.round((Math.PI * (rx + ry)) / dot));
+      // A steady inner ring, and one pulsing out from it.
+      for (const [k0, a0, grow] of [
+        [0, 0.55, 0],
+        [1, 0.75 * (1 - pulse), 1],
+      ] as const) {
+        ctx.globalAlpha = a0;
+        ctx.fillStyle = k0 ? '#ff5a5a' : '#c0392b';
+        const ex = grow ? rx : rx - pulse * 8 * px;
+        const ey = grow ? ry : ry - pulse * 5 * px;
+        for (let k = 0; k < n; k++) {
+          const a = (k / n) * Math.PI * 2;
+          ctx.fillRect(Math.round(cx + Math.cos(a) * ex - dot / 2), Math.round(cy + Math.sin(a) * ey - dot / 2), dot, dot);
+        }
       }
       ctx.globalAlpha = 1;
 
@@ -1262,15 +1273,15 @@ export class MapView {
         const [from, to] = Math.random() < 0.5 ? [a, b] : [b, a];
         this.fx.add({ kind: 'tracer', x: from.tx, y: from.ty, x2: to.tx, y2: to.ty, vx: 0, vy: 0, life: 260, size: 1, color: '#fff1a8' });
       }
-      if (Math.random() < dt * 8 && this.fx.allow()) {
+      if (Math.random() < dt * 10 && this.fx.allow()) {
         const it = rand(list);
-        const jx = ((Math.random() - 0.5) * FRAME_W * px * 1.6) / scale;
-        const jy = ((Math.random() - 0.5) * FRAME_H * px) / scale;
-        this.fx.add({ kind: 'spark', x: it.tx + jx, y: it.ty + jy, vx: 0, vy: 0, life: 110, size: 1, color: Math.random() < 0.5 ? '#fff3a0' : '#ffffff' });
+        const jx = ((Math.random() - 0.5) * FRAME_W * px * 1.8) / scale;
+        const jy = ((Math.random() - 0.5) * FRAME_H * px * 1.2) / scale;
+        this.fx.add({ kind: 'spark', x: it.tx + jx, y: it.ty + jy, vx: 0, vy: 0, life: 130, size: 2, color: Math.random() < 0.5 ? '#fff3a0' : '#ffffff' });
       }
-      if (Math.random() < dt * 1.5 && this.fx.allow()) {
+      if (Math.random() < dt * 2.5 && this.fx.allow()) {
         const it = rand(list);
-        this.fx.add({ kind: 'smoke', x: it.tx + ((Math.random() - 0.5) * 20 * px) / scale, y: it.ty - (6 * px) / scale, vx: 2, vy: -5, life: 1700, size: 2, color: '#9aa0a4' });
+        this.fx.add({ kind: 'smoke', x: it.tx + ((Math.random() - 0.5) * 24 * px) / scale, y: it.ty - (8 * px) / scale, vx: 3, vy: -6, life: 1900, size: 3, color: '#a3a9ad' });
       }
       // Artillery: now and then a shell lands somewhere in the region.
       const due = this.nextBoom.get(r) ?? now + 600 + Math.random() * 1800;
@@ -1279,9 +1290,9 @@ export class MapView {
         const i = pix[Math.floor(Math.random() * pix.length)];
         const x = i % W;
         const y = (i - x) / W;
-        this.fx.add({ kind: 'boom', x, y, vx: 0, vy: 0, life: 520, size: 4, color: '#ff9a3c' });
+        this.fx.add({ kind: 'boom', x, y, vx: 0, vy: 0, life: 560, size: 7, color: '#ff9a3c' });
         for (let k = 0; k < 3; k++) {
-          this.fx.add({ kind: 'smoke', x: x + (Math.random() - 0.5) * 2, y, vx: 1 + Math.random() * 2, vy: -3 - Math.random() * 3, born: now + 120 + k * 90, life: 1900, size: 3, color: '#5a5f63' });
+          this.fx.add({ kind: 'smoke', x: x + (Math.random() - 0.5) * 2, y, vx: 1 + Math.random() * 2, vy: -3 - Math.random() * 3, born: now + 120 + k * 90, life: 2100, size: 4, color: '#5a5f63' });
         }
         this.sounds?.boom(Math.min(1, scale / 2));
         this.nextBoom.set(r, now + 2000 + Math.random() * 2000);
