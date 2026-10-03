@@ -42,9 +42,12 @@ interface Style {
   found: number;
   /** Largest city level it expands to. */
   cityCap: number;
+  /** Stays home: no new land, no new units; at war it only takes back its own regions. */
+  defensive?: boolean;
 }
 
 const STYLES: Record<BotDifficulty, Style> = {
+  defensive: { think: 1.5, odds: 1.6, forts: 2, tanks: false, merges: true, reserve: 100, develop: 0.8, smart: true, roads: true, found: 2400, cityCap: 4, defensive: true },
   easy: { think: 3, odds: 2.2, forts: 1, tanks: false, merges: false, reserve: 150, develop: 0.5, smart: false, roads: false, found: Infinity, cityCap: 3 },
   normal: { think: 1.5, odds: 1.6, forts: 2, tanks: true, merges: true, reserve: 100, develop: 0.8, smart: true, roads: true, found: 2400, cityCap: 4 },
   hard: { think: 0.6, odds: 1.25, forts: 3, tanks: true, merges: true, reserve: 60, develop: 1, smart: true, roads: true, found: 2000, cityCap: MAX_CITY },
@@ -56,6 +59,8 @@ export class Bot {
   private readonly random: () => number;
   private readonly opportunism: Opportunism | null;
   private next = 0;
+  /** Defensive: the land it held when it started playing; the only land it fights for. */
+  private home: Set<number> | null = null;
   private nextDiplomacy = 0;
   private heading = new Map<number, number>();
   /** Enemy → when this bot first saw the war. */
@@ -75,6 +80,10 @@ export class Bot {
   }
 
   act(sim: Sim): void {
+    // Defensive: its home is the land it holds the moment it starts playing.
+    if (this.style.defensive && !this.home) {
+      this.home = new Set(sim.state.regions.flatMap((rs, i) => (rs.owner === this.player ? [i] : [])));
+    }
     if (sim.state.time < this.next) return;
     this.next = sim.state.time + this.style.think * (0.8 + 0.4 * this.random());
     const me = sim.player(this.player);
@@ -172,6 +181,7 @@ export class Bot {
     const mine = regions.flatMap((rs, i) => (rs.owner === this.player ? [i] : []));
 
     for (const r of mine) {
+      if (this.style.defensive) break; // no new units
       const rs = regions[r];
       if (rs.barracks && rs.production.barracks.queue.length === 0) sim.produce(this.player, r, 'barracks');
       if (this.style.tanks && rs.factory && rs.production.factory.queue.length === 0) sim.produce(this.player, r, 'factory');
@@ -202,7 +212,7 @@ export class Bot {
 
     // More barracks as the country grows, in the cities closest to the front.
     const barracks = mine.filter((r) => regions[r].barracks).length;
-    if (barracks < 1 + Math.floor(mine.length / 12)) {
+    if (!this.style.defensive && barracks < 1 + Math.floor(mine.length / 12)) {
       const site = cities.filter((r) => can(r, 'barracks')).sort((a, b) => this.frontDistance(sim, a) - this.frontDistance(sim, b))[0];
       if (site !== undefined && sim.build(this.player, site, 'barracks') === null) return;
     }
@@ -376,8 +386,10 @@ export class Bot {
       if (sim.state.regions[b.region].owner === this.player && this.threat(sim, b.region) > 0 && b.region !== me.capital) {
         continue; // hold the line
       }
-      const target =
-        this.expandTarget(sim, b, targeted) ?? this.stagingArea(sim, b) ?? this.nearestEnemy(sim, b) ?? this.borderPost(sim, b);
+      // Defensive: no new land and no marching on the enemy; just man the borders.
+      const target = this.style.defensive
+        ? (this.stagingArea(sim, b) ?? this.borderPost(sim, b))
+        : (this.expandTarget(sim, b, targeted) ?? this.stagingArea(sim, b) ?? this.nearestEnemy(sim, b) ?? this.borderPost(sim, b));
       if (target === null || target === b.region) continue;
       targeted.add(target);
       sim.move(this.player, [b.id], target);
@@ -399,8 +411,11 @@ export class Bot {
         if (sim.atWar(this.player, rs.owner) || sim.hostileIn(e.id, this.player)) out.add(e.id);
       }
     }
+    // Defensive: only its own land, lost or with enemies in it.
+    const home = this.home;
+    const allowed = home ? [...out].filter((r) => home.has(r)) : [...out];
     // Weakest first.
-    return [...out].sort((a, b) => this.defence(sim, a) - this.defence(sim, b));
+    return allowed.sort((a, b) => this.defence(sim, a) - this.defence(sim, b));
   }
 
   /** What it would take to win a region: enemy strength there, forts and digging in counted. */

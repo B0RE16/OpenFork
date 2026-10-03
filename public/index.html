@@ -36,7 +36,7 @@
           <section>
             <h3>Commanders</h3>
             <ul id="members" class="members"></ul>
-            <p class="hint">Empty seats are filled with bots when the game starts.</p>
+            <p id="seats-hint" class="hint">Empty seats are filled with bots when the game starts.</p>
             <h3>Parameters</h3>
             <div id="settings" class="settings"></div>
           </section>
@@ -61,7 +61,8 @@
       <div id="offers" class="hud offers hidden"></div>
       <div id="legend" class="hud legend hidden">
         <div class="classbar"><span>Supply</span><span>V</span></div>
-        <div><i class="key in"></i>in supply <i class="key edge"></i>edge of reach <i class="key cut"></i>cut off</div>
+        <div><i class="key in"></i>in supply <i class="key edge"></i>edge of reach <i class="key over"></i>overloaded <i class="key cut"></i>cut off</div>
+        <div>Overloaded: more troops than the region feeds (orange cube on units); they wither. Cut off: no supply at all.</div>
         <div>Crate = hub (capital, city) · bar under units = load vs capacity</div>
       </div>
       <div id="buildbar" class="hud buildbar hidden"></div>

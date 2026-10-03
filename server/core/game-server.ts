@@ -2,7 +2,7 @@
 // messages and calls tick() every TICK_MS (see server/main.ts).
 import type { GameMap } from '../../shared/map.ts';
 import type { ClientMessage, LobbyMember, LobbySettings, LobbyView, ServerMessage } from '../../shared/protocol.ts';
-import { MAX_PLAYERS, MIN_CAPITAL_KM, MIN_PLAYERS, PLAYER_COLORS, SNAPSHOT_EVERY_TICKS } from '../../shared/rules.ts';
+import { type BotDifficulty, MAX_PLAYERS, MIN_CAPITAL_KM, MIN_PLAYERS, MIN_PVP_PLAYERS, PLAYER_COLORS, SNAPSHOT_EVERY_TICKS } from '../../shared/rules.ts';
 import { Game, type Seat } from './game.ts';
 import { parseClientMessage } from './parse.ts';
 import type { Auth, Clock, ConnId, Identity, MatchLog, Transport } from './ports.ts';
@@ -275,9 +275,14 @@ export class GameServer {
     const world = this.worlds.get(lobby.settings.map);
     if (!world) return 'no such map';
     const s = lobby.settings;
-    const size = Math.min(MAX_PLAYERS, Math.max(MIN_PLAYERS, s.size));
+    // Pure PvP: one country per person here, no bots filling seats.
+    const pvp = s.difficulty === 'none';
+    const here = [...lobby.members.values()].filter((m) => m.conns.size > 0);
+    if (pvp && here.length < MIN_PVP_PLAYERS) return `pure PvP needs at least ${MIN_PVP_PLAYERS} people`;
+    const size = pvp ? Math.min(MAX_PLAYERS, here.length) : Math.min(MAX_PLAYERS, Math.max(MIN_PLAYERS, s.size));
+    const botDifficulty: BotDifficulty = s.difficulty === 'none' ? 'defensive' : s.difficulty;
     const playable = world.map.countries.filter((c) => c.playable);
-    const humans = [...lobby.members.values()].filter((m) => m.conns.size > 0).slice(0, size);
+    const humans = here.slice(0, size);
     const taken = new Set<string>();
     const free = () => playable.filter((c) => !taken.has(c.id)).map((c) => c.id);
     // Free picks first; everyone else is dealt a country whose capital is well away from
@@ -302,14 +307,14 @@ export class GameServer {
       .filter((m) => country.has(m.identity.id))
       .map((m) => ({
         human: m.identity.id,
-        setup: { name: m.identity.name, country: country.get(m.identity.id) as string, color: '', control: 'human', difficulty: s.difficulty },
+        setup: { name: m.identity.name, country: country.get(m.identity.id) as string, color: '', control: 'human', difficulty: botDifficulty },
       }));
     while (seats.length < size) {
       const pick = this.spacedCountry(world, free(), [...taken]);
       if (!pick) break;
       taken.add(pick);
       const name = playable.find((c) => c.id === pick)?.name ?? pick;
-      seats.push({ human: null, setup: { name: `${name} (bot)`, country: pick, color: '', control: 'bot', difficulty: s.difficulty } });
+      seats.push({ human: null, setup: { name: `${name} (bot)`, country: pick, color: '', control: 'bot', difficulty: botDifficulty } });
     }
     seats.forEach((seat, i) => (seat.setup.color = PLAYER_COLORS[i % PLAYER_COLORS.length]));
     lobby.game = new Game(world, seats, s.starting, s.difficulty, Math.floor(this.random() * 2 ** 31), this.deps.clock.now());

@@ -687,6 +687,10 @@ button.primary:hover:not(:disabled) {
 }
 
 .legend .key.edge {
+  background: #e8e27a;
+}
+
+.legend .key.over {
   background: var(--warn);
 }
 

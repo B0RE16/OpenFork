@@ -7,11 +7,15 @@ import { Bot } from '../server/core/bot.ts';
 import { mulberry32 } from '../server/core/rng.ts';
 import { Sim } from '../server/core/sim.ts';
 import { World } from '../server/core/world.ts';
+import { chain, clearBlobs, makeMap, place, sim } from './helpers.ts';
 
 const europe: GameMap = JSON.parse(readFileSync(new URL('../public/maps/europe.json', import.meta.url), 'utf8'));
 
 function play(difficulty: BotDifficulty, seconds: number) {
-  const countries = europe.countries.filter((c) => c.playable).slice(0, 8);
+  // A fixed eight (the map's first playable ones before more were added), so the numbers
+  // below don't shift when the map gains countries.
+  const picks = ['BY', 'FI', 'FR', 'DE', 'GR', 'IT', 'NO', 'PL'];
+  const countries = europe.countries.filter((c) => c.playable && picks.includes(c.id));
   const sim = new Sim(
     new World(europe),
     countries.map((c, i) => ({ name: c.name, country: c.id, color: PLAYER_COLORS[i], control: 'bot', difficulty })),
@@ -50,5 +54,45 @@ describe('bots on Europe', () => {
     assert.ok(war, 'a war started');
     assert.ok(war.at >= 180, 'not before hard bots are allowed to');
     assert.ok(events.some((e) => e.kind === 'battle'), 'and there was fighting');
+  });
+});
+
+describe('defensive bots', () => {
+  it('stay home: no new land, no wars, no new units, but they build', () => {
+    const start = play('defensive', 1);
+    const owned = (sim: Sim) => sim.state.regions.filter((r) => r.owner >= 0).length;
+    const before = owned(start.sim);
+    const { sim, events } = play('defensive', 300);
+    assert.equal(owned(sim), before, 'no new land');
+    assert.ok(!events.some((e) => e.kind === 'war' || e.kind === 'produced' || e.kind === 'captured'));
+    assert.ok(events.some((e) => e.kind === 'built'), 'they still develop');
+  });
+
+  it('at war, take back their own lost land but never push into the enemy\'s', () => {
+    // A: 0..3, B (defensive bot): 4..7, capital 7.
+    const map = makeMap(
+      Array.from({ length: 8 }, (_, i) => ({ country: i < 4 ? 'A' : 'B' })),
+      chain(8),
+      [
+        { id: 'A', capital: 0 },
+        { id: 'B', capital: 7 },
+      ],
+    );
+    const s = sim(map, ['A', 'B']);
+    clearBlobs(s);
+    s.state.regions.forEach((r, i) => (r.owner = i < 4 ? 0 : 1));
+    place(s, 1, 'infantry', 7, 20); // the capital's guard
+    for (let i = 0; i < 2; i++) place(s, 1, 'infantry', 5, 20);
+    const bot = new Bot(1, 'defensive', mulberry32(5));
+    bot.act(s); // learns its home: 4..7
+    s.declareWar(0, 1);
+    s.state.regions[4].owner = 0; // lost, and left empty
+    for (let i = 0; i < 1200; i++) {
+      bot.act(s);
+      s.tick();
+    }
+    assert.equal(s.state.regions[4].owner, 1, 'took its region back');
+    assert.equal(s.state.regions[3].owner, 0, 'and went no further');
+    assert.ok([...s.state.blobs.values()].every((b) => b.owner !== 1 || b.region >= 4));
   });
 });

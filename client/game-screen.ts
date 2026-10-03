@@ -77,6 +77,8 @@ export class GameScreen {
   private roadPath: number[] | null = null;
   private box: [number, number, number, number] | null = null;
   private feed: Array<[string, string]> = [];
+  /** Game time each region last got a supply warning. */
+  private readonly supplyWarned = new Map<number, number>();
   private raf = 0;
   private keys = new Set<string>();
   private readonly cleanup: Array<() => void> = [];
@@ -208,6 +210,7 @@ export class GameScreen {
   onSnapshot(snap: Snapshot): void {
     if (this.snap) this.view.noteLosses(this.snap, snap);
     this.snap = snap;
+    this.warnSupply(snap);
     // Stand-ins for orders on their way: gone once the server's routes show, or after half a second.
     const p = this.view.pending;
     const routed = new Set(snap.routes.map((r) => r[0]));
@@ -1020,7 +1023,61 @@ export class GameScreen {
         text = `${name(e.player)} wins`;
         break;
     }
-    if (!text) return;
+    if (text) this.say(text);
+  }
+
+  /** Your troops in a region against what it can feed (only your own regions feed them). */
+  private load(region: number): { load: number; cap: number } {
+    const snap = this.snap as Snapshot;
+    let load = 0;
+    for (const b of snap.blobs) if (b[1] === this.you && b[6] === region && b[8] === 0) load += b[4] * UNITS[UNIT_INDEX[b[2]]].supplyNeed;
+    return { load, cap: supplyCapacity(this.map.regions[region], snap.regions[region][2]) };
+  }
+
+  /** The region panel's supply line: reach, and for your regions your load against capacity. */
+  private supplyLine(region: number): string {
+    const row = (this.snap as Snapshot).regions[region];
+    if (!(row[3] & 4)) return 'CUT OFF';
+    const { load, cap } = this.load(region);
+    if (row[0] !== this.you) return `in supply · feeds ${Math.round(cap)}`;
+    return `in supply · load ${Math.round(load)} / ${Math.round(cap)}${load > cap ? ' OVERLOADED' : ''}`;
+  }
+
+  /** Why a unit is short of supply ('' if it isn't). */
+  private supplyWhy(b: BlobRow): string {
+    if (b[10] >= 0.99 || !this.snap) return '';
+    const row = this.snap.regions[b[6]];
+    if (row[0] !== b[1]) return 'short in foreign land';
+    if (!(row[3] & 4)) return 'cut off';
+    const { load, cap } = this.load(b[6]);
+    return `overloaded ${Math.round(load)}/${Math.round(cap)}`;
+  }
+
+  /** Units losing strength to supply: say where and why, once a minute per region. */
+  private warnSupply(snap: Snapshot): void {
+    if (this.you === null || !snap.players[this.you]?.alive) return;
+    const short = new Map<number, string>();
+    for (const b of snap.blobs) {
+      if (b[1] !== this.you || b[8] > 0 || b[10] >= 0.99) continue;
+      if (!short.has(b[6])) short.set(b[6], this.supplyWhy(b));
+    }
+    for (const [region, why] of short) {
+      const last = this.supplyWarned.get(region) ?? -Infinity;
+      if (snap.time - last < 60) continue;
+      this.supplyWarned.set(region, snap.time);
+      const name = this.map.regions[region].name;
+      this.say(
+        why.startsWith('overloaded')
+          ? `Too many troops at ${name} (${why.slice(11)} supply): they wither. Spread out or build a city.`
+          : why === 'cut off'
+            ? `${name} is CUT OFF: units there wither`
+            : `Troops at ${name} are short of supply (from your land next door)`,
+      );
+    }
+  }
+
+  /** A line in the sitrep feed. */
+  private say(text: string): void {
     this.feed.unshift([clock(this.snap?.time ?? 0), text]);
     this.feed.length = Math.min(this.feed.length, 8);
     $('#feed').replaceChildren(classbar('SITREP'), ...this.feed.map(([t, m]) => el('div', {}, [el('time', {}, [t]), m])));
@@ -1052,7 +1109,11 @@ export class GameScreen {
     const row = el('div', { class: `unit${this.selected.has(b[0]) ? ' sel' : ''}` }, [
       el('span', { class: 'swatch', style: `background:${colorOf(this.players, b[1])}` }),
       el('span', {}, [`${type === 'tank' ? 'ARM' : 'INF'} ${Math.ceil(b[3])}/${b[4]}`]),
-      el('span', { class: 'meta' }, [`TRN ${b[5]} · SUP ${Math.round(b[10] * 100)}% · DUG ${Math.round(b[9] * 100)}%`, el('br'), where.toUpperCase()]),
+      el('span', { class: 'meta' }, [
+        `TRN ${b[5]} · SUP ${Math.round(b[10] * 100)}%${this.supplyWhy(b) ? ` (${this.supplyWhy(b).toUpperCase()})` : ''} · DUG ${Math.round(b[9] * 100)}%`,
+        el('br'),
+        where.toUpperCase(),
+      ]),
     ]);
     if (selectable) {
       row.onclick = (e) => {
@@ -1132,7 +1193,7 @@ export class GameScreen {
       ['City', rr[2] > 0 ? `level ${rr[2]} / ${MAX_CITY} · supplies ${supplyReach(rr[2])} regions out` : 'none'],
       ['Slots', `${used} / ${slotsOf(region, rr[2])} built`],
       ['Fort', `${rr[1]} / ${MAX_FORT}`],
-      ['Supply', owner >= 0 ? `${rr[3] & 4 ? 'in supply' : 'CUT OFF'} · cap ${Math.round(supplyCapacity(region, rr[2]))}` : '—'],
+      ['Supply', owner >= 0 ? this.supplyLine(region.id) : '—'],
       ['Stack', `${myCount} / ${stackCap(region, rr[2], rr[1])} of yours`],
       ['Capture', `~${Math.round(captureSeconds(region, rr[1], 0))} s untrained`],
     ];

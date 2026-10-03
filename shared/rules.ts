@@ -131,7 +131,7 @@ export const MERGE_PENALTY = 10;
 export const SUPPLY_REACH_BASE = 3;
 export const ROAD_SUPPLY_HOP = 0.5;
 /** Supply capacity of a region, by terrain, and how much a city in it adds per level. */
-export const SUPPLY_BASE = 30;
+export const SUPPLY_BASE = 90;
 export const SUPPLY_TERRAIN: Record<Terrain, number> = { plains: 1, forest: 0.9, hills: 0.8, mountains: 0.6 };
 export const SUPPLY_PER_CITY_LEVEL = 0.25;
 /** Out of supply: share of size lost per second, and training lost per second. */
@@ -293,6 +293,7 @@ export interface Opportunism {
   maxWars: number;
 }
 export const OPPORTUNISM: Record<BotDifficulty, Opportunism | null> = {
+  defensive: null,
   easy: null,
   normal: { after: 300, ratio: 2, chance: 0.15, maxWars: 1 },
   hard: { after: 180, ratio: 1.6, chance: 0.35, maxWars: 2 },
@@ -309,13 +310,37 @@ export const BOT_MIN_WAR_SECONDS = 180;
 /** Bot fill and random deals keep capitals at least this far apart (spawn spacing). */
 export const MIN_CAPITAL_KM = 600;
 export const MIN_PLAYERS = 4;
-export const MAX_PLAYERS = 8;
-export type BotDifficulty = 'easy' | 'normal' | 'hard';
+export const MAX_PLAYERS = 15;
+/** Bot play styles. Defensive: never starts a war or takes new land; builds its economy
+ * and forts, and at war only fights to take back its own land. */
+export type BotDifficulty = 'defensive' | 'easy' | 'normal' | 'hard';
+/** The lobby's bot setting: a difficulty for the bots that fill empty seats, or none at all
+ * (pure PvP: one country per person). */
+export type BotSetting = BotDifficulty | 'none';
+export const BOT_SETTINGS: readonly BotSetting[] = ['none', 'defensive', 'easy', 'normal', 'hard'];
+/** Pure PvP needs at least this many people. */
+export const MIN_PVP_PLAYERS = 2;
 /** A human who drops is replaced by a bot after this many seconds (until they come back). */
 export const DISCONNECT_BOT_SECONDS = 10;
 
 /** Muted military colours, one per country, picked to stay apart on the terrain. */
-export const PLAYER_COLORS = ['#c0504d', '#4f81bd', '#9bbb59', '#e0a33a', '#8064a2', '#4bacc6', '#d46f3b', '#2f6b5a'];
+export const PLAYER_COLORS = [
+  '#c0504d',
+  '#4f81bd',
+  '#9bbb59',
+  '#e0a33a',
+  '#8064a2',
+  '#4bacc6',
+  '#d46f3b',
+  '#2f6b5a',
+  '#d9c24a',
+  '#d27fb4',
+  '#8c5a3c',
+  '#2e4a8a',
+  '#7a2e3a',
+  '#a99be0',
+  '#3fa36b',
+];
 
 // -- per-region numbers -----------------------------------------------------------------------
 

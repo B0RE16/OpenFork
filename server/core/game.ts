@@ -12,7 +12,7 @@ import {
   type Snapshot,
   UNIT_INDEX,
 } from '../../shared/protocol.ts';
-import { type BotDifficulty, DISCONNECT_BOT_SECONDS, type StartingResources, UNITS } from '../../shared/rules.ts';
+import { type BotDifficulty, type BotSetting, DISCONNECT_BOT_SECONDS, type StartingResources, UNITS } from '../../shared/rules.ts';
 import { Bot } from './bot.ts';
 import { mulberry32 } from './rng.ts';
 import { type PlayerSetup, Sim } from './sim.ts';
@@ -39,14 +39,20 @@ export class Game {
   private readonly bots = new Map<number, Bot>();
   /** player index → sim time they dropped */
   private readonly away = new Map<number, number>();
+  /** Bots that play a country for good (empty seats, people who left). */
   private readonly difficulty: BotDifficulty;
+  /** Bots standing in for someone who dropped, until they're back. */
+  private readonly standIn: BotDifficulty;
   private readonly seed: number;
   private pending: GameEvent[] = [];
   over = false;
 
-  constructor(world: World, seats: Seat[], starting: StartingResources, difficulty: BotDifficulty, seed: number, now: number) {
+  constructor(world: World, seats: Seat[], starting: StartingResources, bots: BotSetting, seed: number, now: number) {
     this.mapId = world.map.id;
-    this.difficulty = difficulty;
+    // Pure PvP: no bot ever attacks anyone; a defensive one only holds the land of a person
+    // who dropped or left.
+    this.difficulty = bots === 'none' ? 'defensive' : bots;
+    this.standIn = bots === 'none' ? 'defensive' : 'normal';
     this.seed = seed;
     this.startedAt = now;
     this.sim = new Sim(
@@ -63,7 +69,7 @@ export class Game {
     }));
     seats.forEach((s, id) => {
       if (s.human) this.humans.set(s.human, id);
-      else this.bots.set(id, this.makeBot(id, difficulty));
+      else this.bots.set(id, this.makeBot(id, this.difficulty));
     });
   }
 
@@ -149,7 +155,7 @@ export class Game {
       const p = this.sim.state.players[id];
       if (p.control === 'human' && this.sim.state.time - since >= DISCONNECT_BOT_SECONDS) {
         p.control = 'bot';
-        this.bots.set(id, this.makeBot(id, 'normal', true));
+        this.bots.set(id, this.makeBot(id, this.standIn, true));
       }
     }
     for (const bot of this.bots.values()) bot.act(this.sim);

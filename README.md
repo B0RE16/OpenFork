@@ -7,7 +7,7 @@ and bots take the other countries. The rules are in **[DESIGN.md](DESIGN.md)**.
 Status: first playable. Everyone starts at peace; bots go to war when attacked or when they
 see a weak neighbour (by difficulty). You can play a land war on mainland Europe (319 regions from real
 provinces) with infantry and tanks, forts, entrenchment, supply, production, and
-easy/normal/hard bots. Naval, air, alliances and fog of war come later.
+defensive/easy/normal/hard bots, or pure PvP with no bots. Naval, air, alliances and fog of war come later.
 
 ## Run it
 

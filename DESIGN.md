@@ -10,9 +10,11 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 
 ## 1. Match
 - Real-time and continuous. Target length is 15–25 min. No time limit and no pause.
-- 4–8 countries per match. Humans join a **private lobby link**; bots fill the rest. The host
+- 4–15 countries per match. Humans join a **private lobby link**; bots fill the rest. The host
   sets lobby size, starting resources (low/normal/high), country pick (free or random) and
-  bot difficulty (easy/normal/hard).
+  bots (defensive/easy/normal/hard, or **none: pure PvP**).
+- **Pure PvP:** one country per person in the lobby (2–15), no bots; every other country
+  starts as neutral land. Someone who drops or leaves is held by a defensive bot.
 - Spectating is allowed for eliminated players and visitors.
 - On disconnect a **bot takes over** the country until the player rejoins.
 - **Win:** hold every capital. Alliances come after v1; allies who hold all remaining
@@ -27,8 +29,12 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 ## 2. Map
 - v1 map: **Europe, modern countries, mainland only, Atlantic to the Urals** (no UK, Ireland,
   Iceland or islands until naval exists). About 300 land regions built from **real provinces**, with admin borders merged or split to that count (denser in the west, coarser in Russia).
-- A map has **more start countries than lobby slots**. Humans pick, bots fill up to the lobby
-  size, and the other countries start as empty neutral land.
+- A map has **more start countries than lobby slots**: Europe has 18 (Austria, Belarus,
+  Bulgaria, Czech Republic, Finland, France, Germany, Greece, Hungary, Italy, Norway,
+  Poland, Portugal, Romania, Russia, Spain, Sweden, Ukraine). Humans pick, bots fill up to
+  the lobby size, and the other countries start as empty neutral land.
+- **Spawn spacing** can't keep 15 capitals 600 km apart; past that, each new country goes
+  as far as it can from the ones already taken.
 - **Spawn spacing:** bots and randomly dealt countries keep their capitals at least 600 km
   from the ones already taken. Countries people pick themselves aren't restricted.
 - **Small start:** capital + about 4 neighbouring regions, 2–3 infantry blobs, and a barracks in
@@ -167,8 +173,13 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 ## 7. Supply
 - **Hubs:** every **city** you own (your capital is one). A city reaches 3 + its level
   regions through your land (a level-3 capital: 6); a border with a road counts as half.
-- **Capacity:** each region has a supply capacity by terrain, raised by a city in it. More
-  blobs than capacity means partial supply.
+- **Capacity:** each region feeds 90 by terrain (plains 1, forest 0.9, hills 0.8,
+  mountains 0.6), +25% per city level; infantry needs 1 per strength point, tanks 2. More
+  troops than that means partial supply: the units **overloaded** there slowly wither.
+  The supply overlay shows overloaded regions in orange (the same orange as the cube on
+  their tokens), the region panel shows load against capacity, the unit panel says why a
+  unit is short (overloaded, cut off, or short in foreign land), and the sitrep warns
+  once a minute per region.
 - **Out of supply:**
   - blobs weaken and slowly die;
   - they can't refill or drill;
@@ -188,7 +199,13 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 - Zones of control (slow movement) apply only in the land of countries you're at war with.
 
 ## 9. Bots
-Bots have **easy, normal and hard** difficulty. They use the same orders as humans:
+Bots have **defensive, easy, normal and hard** difficulty. They use the same orders as humans.
+
+**Defensive** bots stay home: they never declare war and never take new land (not even
+neutral), build their economy, cities and forts, and make no new units. At war they only
+attack to take back their own land (what they held when they started), never the enemy's.
+
+The others:
 - expand into neutral land;
 - guard their borders and dig in with forts, also in peacetime;
 - produce blobs;
@@ -237,6 +254,7 @@ going their way. A bot playing for a disconnected person never starts a war.
 | Infantry / tank production | 20 s / 30 s |
 | Truce after peace / peace offer stands | 180 s / 30 s |
 | Supply reach from a city | 3 + its level (roads: half a hop) |
+| Supply capacity of a region | 90 × terrain × (1 + 0.25 × city level); infantry needs 1 per point, tanks 2 |
 | Base yield per region (money / manpower) | 0.12 / 0.15 per s |
 | Starting resources (normal) | $120, 120 manpower, 25 steel, 20 oil |
 | Build times | farm, market 60 s; mine, oil well 75 s; fort 60 s per level; barracks 60 s; factory 120 s; road 30 s |

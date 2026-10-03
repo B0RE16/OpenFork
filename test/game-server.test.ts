@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import type { GameMap } from '../shared/map.ts';
 import type { ServerMessage } from '../shared/protocol.ts';
-import { DISCONNECT_BOT_SECONDS, SNAPSHOT_EVERY_TICKS } from '../shared/rules.ts';
+import { DISCONNECT_BOT_SECONDS, MAX_PLAYERS, SNAPSHOT_EVERY_TICKS } from '../shared/rules.ts';
 import { GuestAuth } from '../server/adapters/memory.ts';
 import { GameServer } from '../server/core/game-server.ts';
+import { parseClientMessage } from '../server/core/parse.ts';
 import { mulberry32 } from '../server/core/rng.ts';
 import { chain, makeMap } from './helpers.ts';
 
@@ -99,6 +101,46 @@ describe('lobbies', () => {
     const snap = t.last('a', 'snap')?.snap;
     assert.ok(snap && snap.blobs.length > 0 && snap.regions.length === 10);
     assert.ok(snap.production.some((p) => p.building === 'barracks'));
+  });
+
+  it('plays up to MAX_PLAYERS countries on Europe, each with its own colour', async () => {
+    const europe: GameMap = JSON.parse(readFileSync(new URL('../public/maps/europe.json', import.meta.url), 'utf8'));
+    const t = setup(europe);
+    await t.connect('a', 'Ann');
+    await t.send('a', { t: 'lobby.create' });
+    await t.send('a', { t: 'lobby.settings', settings: { size: MAX_PLAYERS } });
+    await t.send('a', { t: 'lobby.start' });
+    const start = t.last('a', 'game.start');
+    assert.equal(start?.players.length, MAX_PLAYERS);
+    assert.equal(new Set(start?.players.map((p) => p.country)).size, MAX_PLAYERS);
+    assert.equal(new Set(start?.players.map((p) => p.color)).size, MAX_PLAYERS);
+    t.tick(SNAPSHOT_EVERY_TICKS);
+    const snap = t.last('a', 'snap')?.snap;
+    for (let p = 0; p < MAX_PLAYERS; p++) assert.ok(snap?.regions.some((r) => r[0] === p), `player ${p} starts with land`);
+  });
+
+  it('pure PvP: one country per person, no bots, and at least two people', async () => {
+    const t = setup();
+    await t.connect('a', 'Ann');
+    await t.send('a', { t: 'lobby.create' });
+    await t.send('a', { t: 'lobby.settings', settings: { difficulty: 'none' } });
+    assert.equal(t.last('a', 'lobby')?.lobby?.settings.difficulty, 'none');
+    await t.send('a', { t: 'lobby.start' });
+    assert.match(t.last('a', 'error')?.message ?? '', /at least 2 people/);
+    const code = t.last('a', 'lobby')?.lobby?.code as string;
+    await t.connect('b', 'Bob');
+    await t.send('b', { t: 'lobby.join', code });
+    await t.send('a', { t: 'lobby.start' });
+    const start = t.last('a', 'game.start');
+    assert.equal(start?.players.length, 2);
+    assert.ok(start?.players.every((p) => p.human));
+  });
+
+  it('accepts the bot settings none, defensive, easy, normal and hard, nothing else', () => {
+    for (const d of ['none', 'defensive', 'easy', 'normal', 'hard']) {
+      assert.ok(parseClientMessage({ t: 'lobby.settings', settings: { difficulty: d } }), d);
+    }
+    assert.equal(parseClientMessage({ t: 'lobby.settings', settings: { difficulty: 'brutal' } }), null);
   });
 
   it('takes orders from the country\'s player only; watchers just watch', async () => {
