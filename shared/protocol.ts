@@ -1,6 +1,6 @@
 // Every WebSocket message between the browser and the server (JSON, one object per frame).
 import type {
-  BotDifficulty,
+  BotSetting,
   BuildingKind,
   ProductionBuilding,
   StartingResources,
@@ -40,7 +40,7 @@ export interface LobbySettings {
   starting: StartingResources;
   /** 'free': everyone picks a country; 'random': countries are dealt out at the start. */
   pick: 'free' | 'random';
-  difficulty: BotDifficulty;
+  difficulty: BotSetting;
 }
 
 export type ClientMessage =

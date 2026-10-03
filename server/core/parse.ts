@@ -1,6 +1,6 @@
 // Checks untrusted client messages. Anything malformed comes back as null.
 import type { ClientMessage, LobbySettings, Order } from '../../shared/protocol.ts';
-import { BUILDING_KINDS, type BuildingKind, MAX_PLAYERS, MIN_PLAYERS } from '../../shared/rules.ts';
+import { BOT_SETTINGS, type BotSetting, BUILDING_KINDS, type BuildingKind, MAX_PLAYERS, MIN_PLAYERS } from '../../shared/rules.ts';
 
 const MAX_IDS = 64;
 
@@ -76,8 +76,8 @@ function settings(v: unknown): Partial<LobbySettings> | null {
     out.pick = v.pick;
   }
   if (v.difficulty !== undefined) {
-    if (v.difficulty !== 'easy' && v.difficulty !== 'normal' && v.difficulty !== 'hard') return null;
-    out.difficulty = v.difficulty;
+    if (!BOT_SETTINGS.includes(v.difficulty as BotSetting)) return null;
+    out.difficulty = v.difficulty as BotSetting;
   }
   return out;
 }

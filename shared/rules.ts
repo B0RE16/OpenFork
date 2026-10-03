@@ -293,6 +293,7 @@ export interface Opportunism {
   maxWars: number;
 }
 export const OPPORTUNISM: Record<BotDifficulty, Opportunism | null> = {
+  defensive: null,
   easy: null,
   normal: { after: 300, ratio: 2, chance: 0.15, maxWars: 1 },
   hard: { after: 180, ratio: 1.6, chance: 0.35, maxWars: 2 },
@@ -310,7 +311,15 @@ export const BOT_MIN_WAR_SECONDS = 180;
 export const MIN_CAPITAL_KM = 600;
 export const MIN_PLAYERS = 4;
 export const MAX_PLAYERS = 15;
-export type BotDifficulty = 'easy' | 'normal' | 'hard';
+/** Bot play styles. Defensive: never starts a war or takes new land; builds its economy
+ * and forts, and at war only fights to take back its own land. */
+export type BotDifficulty = 'defensive' | 'easy' | 'normal' | 'hard';
+/** The lobby's bot setting: a difficulty for the bots that fill empty seats, or none at all
+ * (pure PvP: one country per person). */
+export type BotSetting = BotDifficulty | 'none';
+export const BOT_SETTINGS: readonly BotSetting[] = ['none', 'defensive', 'easy', 'normal', 'hard'];
+/** Pure PvP needs at least this many people. */
+export const MIN_PVP_PLAYERS = 2;
 /** A human who drops is replaced by a bot after this many seconds (until they come back). */
 export const DISCONNECT_BOT_SECONDS = 10;
 

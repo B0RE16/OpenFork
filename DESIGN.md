@@ -12,7 +12,9 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 - Real-time and continuous. Target length is 15–25 min. No time limit and no pause.
 - 4–15 countries per match. Humans join a **private lobby link**; bots fill the rest. The host
   sets lobby size, starting resources (low/normal/high), country pick (free or random) and
-  bot difficulty (easy/normal/hard).
+  bots (defensive/easy/normal/hard, or **none: pure PvP**).
+- **Pure PvP:** one country per person in the lobby (2–15), no bots; every other country
+  starts as neutral land. Someone who drops or leaves is held by a defensive bot.
 - Spectating is allowed for eliminated players and visitors.
 - On disconnect a **bot takes over** the country until the player rejoins.
 - **Win:** hold every capital. Alliances come after v1; allies who hold all remaining
@@ -197,7 +199,13 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 - Zones of control (slow movement) apply only in the land of countries you're at war with.
 
 ## 9. Bots
-Bots have **easy, normal and hard** difficulty. They use the same orders as humans:
+Bots have **defensive, easy, normal and hard** difficulty. They use the same orders as humans.
+
+**Defensive** bots stay home: they never declare war and never take new land (not even
+neutral), build their economy, cities and forts, and make no new units. At war they only
+attack to take back their own land (what they held when they started), never the enemy's.
+
+The others:
 - expand into neutral land;
 - guard their borders and dig in with forts, also in peacetime;
 - produce blobs;

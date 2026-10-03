@@ -1,7 +1,7 @@
 // The app: home screen, lobby, and handing over to the game screen.
 import type { GameMap } from '../shared/map.ts';
 import type { LobbySettings, LobbyView, ServerMessage } from '../shared/protocol.ts';
-import { MAX_PLAYERS, MIN_PLAYERS } from '../shared/rules.ts';
+import { MAX_PLAYERS, MIN_PLAYERS, MIN_PVP_PLAYERS } from '../shared/rules.ts';
 import { GameScreen } from './game-screen.ts';
 import { Net, savedName } from './net.ts';
 import { ICONS, spriteUrl } from './sprites.ts';
@@ -176,11 +176,18 @@ function renderLobbyBody(map: GameMap | null): void {
   };
   const sizes: Array<[string, string]> = [];
   for (let n = MIN_PLAYERS; n <= MAX_PLAYERS; n++) sizes.push([String(n), `${n} countries`]);
+  // Pure PvP: the game has one country per person here, so the size setting doesn't apply.
+  const pvp = s.difficulty === 'none';
+  const size = select('size', sizes);
+  if (pvp) {
+    (size as HTMLSelectElement).disabled = true;
+    size.title = 'Pure PvP: one country per person in the lobby';
+  }
   settings.replaceChildren(
     el('span', {}, ['Map']),
     select('map', [['europe', 'Europe']]),
     el('span', {}, ['Countries']),
-    select('size', sizes),
+    size,
     el('span', {}, ['Starting resources']),
     select('starting', [
       ['low', 'Low'],
@@ -194,12 +201,17 @@ function renderLobbyBody(map: GameMap | null): void {
     ]),
     el('span', {}, ['Bots']),
     select('difficulty', [
+      ['none', 'None: pure PvP'],
+      ['defensive', 'Defensive only'],
       ['easy', 'Easy'],
       ['normal', 'Normal'],
       ['hard', 'Hard'],
     ]),
   );
 
+  $('#seats-hint').textContent = pvp
+    ? 'Pure PvP: one country per person here, no bots. Someone who drops is held by a defensive bot until they are back.'
+    : 'Empty seats are filled with bots when the game starts.';
   const start = $('#start') as HTMLButtonElement;
   start.disabled = !host || lobby.playing;
   $('#lobby-status').textContent = loadingGame
@@ -207,7 +219,9 @@ function renderLobbyBody(map: GameMap | null): void {
     : lobby.playing
       ? 'A game is running.'
       : host
-        ? `${lobby.members.length} ${lobby.members.length === 1 ? 'person' : 'people'} here; bots fill up to ${s.size}.`
+        ? pvp
+          ? `Pure PvP: ${lobby.members.length} ${lobby.members.length === 1 ? 'person' : 'people'} here, one country each, no bots${lobby.members.length < MIN_PVP_PLAYERS ? ` (needs ${MIN_PVP_PLAYERS})` : ''}.`
+          : `${lobby.members.length} ${lobby.members.length === 1 ? 'person' : 'people'} here; bots fill up to ${s.size}.`
         : 'Waiting for the host to start.';
   if (!map) {
     $('#countries').replaceChildren(el('p', { class: 'hint' }, ['Loading the map…']));
