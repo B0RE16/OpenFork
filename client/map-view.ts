@@ -5,7 +5,7 @@ import type { BlobRow, GamePlayer, Snapshot } from '../shared/protocol.ts';
 import { UNIT_INDEX } from '../shared/protocol.ts';
 import { BUILDING_KINDS, type BuildingKind, ROAD_SUPPLY_HOP, supplyCapacity, supplyReach, UNITS } from '../shared/rules.ts';
 import { Fx } from './fx.ts';
-import { blit, blitCentred, FRAME_H, FRAME_W, ICONS, INK, MAP_ART, pixelDigits, ROAD_COLOR, ROAD_SHADE, shade, type Sprite, unitFrame } from './sprites.ts';
+import { art, blit, blitCentred, FRAME_H, FRAME_W, ICONS, INK, MAP_ART, pixelDigits, ROAD_COLOR, ROAD_SHADE, shade, type Sprite, unitFrame } from './sprites.ts';
 
 export interface Camera {
   x: number;
@@ -38,6 +38,8 @@ interface Item {
   group: string;
   /** Part of the expanded stack: never merged or pushed, drawn on top. */
   pinned?: boolean;
+  /** Defenders under attack: what helps them hold (shown as a shield badge). */
+  shield?: { fort: number; dug: boolean; river: boolean };
   /** Position in map coordinates. */
   tx: number;
   ty: number;
@@ -101,6 +103,12 @@ export class MapView {
   /** Road tool: the regions dragged across so far, drawn as a dashed line. */
   roadPreview: number[] | null = null;
   private readonly placeLayer: HTMLCanvasElement;
+  /** Front lines: borders between countries at war, as two-colour seams. */
+  private readonly frontLayer: HTMLCanvasElement;
+  private frontImg: ImageData | null = null;
+  private frontPix: number[] = [];
+  private frontKey = '';
+  private frontSnap: Snapshot | null = null;
   private placeImg: ImageData | null = null;
   private shownValid = new Uint8Array(0);
   /** Towns, buildings and roads, painted at map resolution (they zoom with the terrain). */
@@ -120,6 +128,7 @@ export class MapView {
     this.highlight = offscreen(map.width, map.height);
     this.supplyLayer = offscreen(map.width, map.height);
     this.placeLayer = offscreen(map.width, map.height);
+    this.frontLayer = offscreen(map.width, map.height);
     this.developLayer = offscreen(map.width, map.height);
     // Border pixels never change; only who owns each side does.
     const W = map.width;
@@ -543,6 +552,53 @@ export class MapView {
     if (x1 >= x0) ctx.putImageData(this.supplyImg, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
   }
 
+  /** Repaints the front lines when owners or wars changed (once per snapshot at most). */
+  private updateFrontLayer(snap: Snapshot, players: GamePlayer[]): void {
+    if (snap === this.frontSnap) return;
+    this.frontSnap = snap;
+    const key = `${JSON.stringify(snap.wars)}|${snap.regions.map((r) => r[0]).join(',')}`;
+    if (key === this.frontKey) return;
+    this.frontKey = key;
+    const W = this.map.width;
+    const ctx = this.frontLayer.getContext('2d') as CanvasRenderingContext2D;
+    this.frontImg ??= ctx.createImageData(W, this.map.height);
+    const d = this.frontImg.data;
+    for (const i of this.frontPix) d[i * 4 + 3] = 0;
+    const wars = new Set(snap.wars.map(([a, b]) => `${Math.min(a, b)}:${Math.max(a, b)}`));
+    const rgb = players.map((p) => hexRgb(p.color));
+    const painted: number[] = [];
+    for (let k = 0; k < this.edges.length; k++) {
+      const other = this.edgeOther[k];
+      if (other === WATER) continue;
+      const i = this.edges[k];
+      const a = snap.regions[this.grid[i]][0];
+      const b = snap.regions[other][0];
+      if (a < 0 || b < 0 || a === b || !wars.has(`${Math.min(a, b)}:${Math.max(a, b)}`)) continue;
+      const x = i % W;
+      const y = (i - x) / W;
+      // Dashed: bright and dark stretches in each side's own colour.
+      const c = rgb[a];
+      const k2 = ((x + y) >> 1) % 2 ? 1 : 0.55;
+      d[i * 4] = Math.min(255, c[0] * k2 + (k2 === 1 ? 40 : 0));
+      d[i * 4 + 1] = Math.min(255, c[1] * k2 + (k2 === 1 ? 40 : 0));
+      d[i * 4 + 2] = Math.min(255, c[2] * k2 + (k2 === 1 ? 40 : 0));
+      d[i * 4 + 3] = 255;
+      painted.push(i);
+    }
+    // Repaint the area old and new seams cover.
+    let [x0, y0, x1, y1] = [W, this.map.height, -1, -1];
+    for (const i of [...this.frontPix, ...painted]) {
+      const x = i % W;
+      const y = (i - x) / W;
+      if (x < x0) x0 = x;
+      if (y < y0) y0 = y;
+      if (x > x1) x1 = x;
+      if (y > y1) y1 = y;
+    }
+    this.frontPix = painted;
+    if (x1 >= x0) ctx.putImageData(this.frontImg, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+  }
+
   /** Where a region's town (or the hub of its roads) is: the real city, else the label point. */
   private townAt(region: number): [number, number] {
     const r = this.map.regions[region];
@@ -657,6 +713,50 @@ export class MapView {
         }
       }
     });
+  }
+
+  /** The middle of the border between two regions, on region `r`'s side (map pixels). */
+  private readonly borderPoints = new Map<number, [number, number]>();
+  borderPoint(r: number, o: number): [number, number] {
+    const key = r * 65536 + o;
+    let p = this.borderPoints.get(key);
+    if (p) return p;
+    const W = this.map.width;
+    const pix: number[] = [];
+    for (const k of this.regionEdges[r]) {
+      const i = this.edges[k];
+      if ((this.grid[i] === r && this.edgeOther[k] === o) || (this.grid[i] === o && this.edgeOther[k] === r)) pix.push(i);
+    }
+    if (!pix.length) {
+      const a = this.map.regions[r];
+      const b = this.map.regions[o];
+      p = [(a.x * 2 + b.x) / 3, (a.y * 2 + b.y) / 3];
+    } else {
+      // The centroid, snapped onto the border itself (a curvy border's centroid can be off it).
+      const cx = pix.reduce((sum, i) => sum + (i % W), 0) / pix.length;
+      const cy = pix.reduce((sum, i) => sum + Math.floor(i / W), 0) / pix.length;
+      let best = pix[0];
+      let bestD = Infinity;
+      for (const i of pix) {
+        const d = (i % W - cx) ** 2 + (Math.floor(i / W) - cy) ** 2;
+        if (d < bestD) [best, bestD] = [i, d];
+      }
+      p = [best % W, Math.floor(best / W)];
+    }
+    this.borderPoints.set(key, p);
+    return p;
+  }
+
+  /** The border a unit standing in someone else's region attacks from (-1: none, middle). */
+  private sideOf(b: BlobRow, region: number, snap: Snapshot): number {
+    const nb = this.map.regions[region].neighbors;
+    if (b[12] >= 0 && nb.some((n) => n.id === b[12])) return b[12];
+    let best = -1;
+    let border = 0;
+    for (const n of nb) {
+      if (snap.regions[n.id][0] === b[1] && n.border > border) [best, border] = [n.id, n.border];
+    }
+    return best;
   }
 
   /** Where a building of this kind in this region stands (or will), in map pixels. */
@@ -906,6 +1006,8 @@ export class MapView {
     ctx.imageSmoothingEnabled = this.cam.scale < 1;
     ctx.drawImage(this.developLayer, 0, 0);
     ctx.imageSmoothingEnabled = false;
+    this.updateFrontLayer(snap, players);
+    ctx.drawImage(this.frontLayer, 0, 0);
     this.drawSites(snap);
     if (this.fx.level === 'full') this.drawAmbient(snap);
     if (showSupply) ctx.drawImage(this.supplyLayer, 0, 0);
@@ -1062,47 +1164,99 @@ export class MapView {
     const byRegion = new Map<number, BlobRow[]>();
     for (const b of snap.blobs) byRegion.set(b[6], [...(byRegion.get(b[6]) ?? []), b]);
 
-    // Individual tokens if zoomed in and they fit, else one stack per country for its parked
-    // units and one per next region for its units on the move.
+    // Individual tokens if zoomed in and they fit, else stacks. A region's own units (and units
+    // on their way out) stand in the middle; units in a region their country doesn't hold are
+    // attacking or taking it, and stand on the border they crossed, one group per border.
     const items: Item[] = [];
     const step = Math.max(FRAME_W * px, PLATE_MIN_W) + 3;
     const sideGap = 14 * px;
     const swords: Array<[number, number]> = [];
+    const attacks: Array<{ owner: number; region: number; side: number; items: Item[] }> = [];
+    const slot = (key: string, rows: BlobRow[], owner: number, moving: boolean, group: string, single: boolean) => {
+      const pinned = group === this.expanded;
+      if (single || pinned || rows.length === 1) return rows.map((b) => ({ key: `b:${b[0]}`, rows: [b], owner, moving, group, pinned }));
+      return [{ key, rows, owner, moving, group, pinned: false }];
+    };
     for (const [region, list] of byRegion) {
       const reg = this.map.regions[region];
-      const byOwner = new Map<number, BlobRow[]>();
-      for (const b of [...list].sort((a, b) => b[3] - a[3])) byOwner.set(b[1], [...(byOwner.get(b[1]) ?? []), b]);
-      const owners = [...byOwner.keys()].sort((a, b) => (a === you ? -1 : b === you ? 1 : a - b));
-      const fits = list.length * step + (owners.length - 1) * sideGap <= Math.sqrt(reg.area) * scale * 0.9;
+      const holder = snap.regions[region][0];
+      const fits = list.length * step <= Math.sqrt(reg.area) * scale * 0.9;
       const single = px >= 2 && fits;
-      const slots: Array<{ key: string; rows: BlobRow[]; owner: number; moving: boolean; group: string; pinned?: boolean }> = [];
+      const sorted = [...list].sort((a, b) => b[3] - a[3]);
+      // The middle: the holder's units, and anyone's units on their way out.
+      const middle: Array<{ key: string; rows: BlobRow[]; owner: number; moving: boolean; group: string; pinned?: boolean }> = [];
+      const attackers = new Map<string, { owner: number; side: number; rows: BlobRow[] }>();
+      const owners = [...new Set(sorted.map((b) => b[1]))].sort((a, b) => (a === you ? -1 : b === you ? 1 : a - b));
       for (const o of owners) {
-        const rows = byOwner.get(o) as BlobRow[];
-        const groups: Array<[string, BlobRow[], boolean]> = [];
+        const rows = sorted.filter((b) => b[1] === o);
         const parked = rows.filter((b) => !transit(b));
-        if (parked.length) groups.push([`s:${o}:${region}`, parked, false]);
         const going = new Map<number, BlobRow[]>();
         for (const b of rows) if (transit(b)) going.set(b[7], [...(going.get(b[7]) ?? []), b]);
-        for (const [next, g] of going) groups.push([`t:${o}:${region}:${next}`, g, true]);
-        for (const [group, g, moving] of groups) {
-          const pinned = group === this.expanded;
-          if (single || pinned || g.length === 1) {
-            for (const b of g) slots.push({ key: `b:${b[0]}`, rows: [b], owner: o, moving, group, pinned });
-          } else slots.push({ key: group, rows: g, owner: o, moving, group });
+        if (o === holder) {
+          if (parked.length) middle.push(...slot(`s:${o}:${region}`, parked, o, false, `s:${o}:${region}`, single));
+        } else {
+          for (const b of parked) {
+            const side = this.sideOf(b, region, snap);
+            if (side < 0) {
+              middle.push(...slot(`s:${o}:${region}`, [b], o, false, `s:${o}:${region}`, single));
+              continue;
+            }
+            const k = `${o}:${side}`;
+            const g = attackers.get(k) ?? { owner: o, side, rows: [] };
+            g.rows.push(b);
+            attackers.set(k, g);
+          }
+        }
+        for (const [next, g] of going) middle.push(...slot(`t:${o}:${region}:${next}`, g, o, true, `t:${o}:${region}:${next}`, single));
+      }
+      // Defenders under attack carry a shield with what helps them hold.
+      const besieged = sorted.some((b) => b[1] !== holder && !transit(b) && holder >= 0 && atWar(b[1], holder));
+      if (besieged) {
+        const river = sorted.some((b) => b[1] !== holder && (b[11] & 2) !== 0);
+        for (const sl of middle) {
+          if (sl.owner === holder && !sl.moving) {
+            (sl as Item).shield = { fort: snap.regions[region][1], dug: sl.rows.some((b) => b[9] >= 0.5), river };
+          }
         }
       }
-      const width = slots.length * step + (owners.length - 1) * sideGap;
+      // Lay out the middle row under the label.
+      let width = middle.length * step;
+      for (let i = 1; i < middle.length; i++) if (middle[i].owner !== middle[i - 1].owner) width += sideGap;
       let x = -width / 2 + step / 2;
       let prev = -2;
-      for (const slot of slots) {
-        if (prev !== -2 && slot.owner !== prev) {
-          // Crossed swords between two sides at war.
-          if (atWar(prev, slot.owner)) swords.push([reg.x + (x - step / 2 + sideGap / 2) / scale, reg.y + 14 / scale]);
-          x += sideGap;
-        }
-        items.push({ ...slot, tx: reg.x + x / scale, ty: reg.y + 14 / scale });
+      for (const sl of middle) {
+        if (prev !== -2 && sl.owner !== prev) x += sideGap;
+        items.push({ ...sl, tx: reg.x + x / scale, ty: reg.y + 14 / scale });
         x += step;
-        prev = slot.owner;
+        prev = sl.owner;
+      }
+      // Each attacking group on its border.
+      const hasMiddle = middle.some((sl) => !sl.moving);
+      for (const g of attackers.values()) {
+        const [bx, by] = this.borderPoint(region, g.side);
+        const group = `a:${g.owner}:${region}:${g.side}`;
+        const slots = slot(group, g.rows, g.owner, false, group, single);
+        const w = slots.length * step;
+        const made: Item[] = [];
+        slots.forEach((sl, i) => {
+          const it = { ...sl, tx: bx + (-w / 2 + step / 2 + i * step) / scale, ty: by };
+          items.push(it);
+          made.push(it);
+        });
+        attacks.push({ owner: g.owner, region, side: g.side, items: made });
+        // Crossed swords halfway between the attackers and the defenders they're fighting.
+        const defended = middle.some((sl) => !sl.moving && atWar(sl.owner, g.owner));
+        if (hasMiddle && defended) swords.push([(bx + reg.x) / 2, (by + reg.y + 14 / scale) / 2]);
+      }
+      // Fights over land nobody here holds: swords between two warring border groups.
+      const groups = [...attackers.values()];
+      for (let i = 0; i < groups.length; i++) {
+        for (let j = i + 1; j < groups.length; j++) {
+          if (!atWar(groups[i].owner, groups[j].owner)) continue;
+          const [ax, ay] = this.borderPoint(region, groups[i].side);
+          const [cx, cy] = this.borderPoint(region, groups[j].side);
+          swords.push([(ax + cx) / 2, (ay + cy) / 2]);
+        }
       }
     }
 
@@ -1145,10 +1299,33 @@ export class MapView {
     const routes = new Map(snap.routes.map((r) => [r[0], r.slice(1)]));
     /** Destination region → heading there with a selected unit. */
     const destinations = new Map<number, boolean>();
+    // Regions with a fight in them (units of two sides at war standing there).
+    const contested = new Set<number>();
+    {
+      const standing = new Map<number, Set<number>>();
+      for (const b of snap.blobs) if (!transit(b)) standing.set(b[6], (standing.get(b[6]) ?? new Set()).add(b[1]));
+      for (const [r, o] of standing) {
+        const list = [...o];
+        if (list.some((a) => list.some((c) => a !== c && atWar(a, c)))) contested.add(r);
+      }
+    }
     for (const it of items) {
       if (!it.moving) continue;
       const [sx, sy] = this.toScreen(it.tx, it.ty);
       const color = colorOf(players, it.owner);
+      // Pulling out of a fight, back to its own land or the way it came: a grey retreat arrow.
+      const b0 = it.rows[0];
+      if (contested.has(b0[6]) && b0[7] >= 0 && (snap.regions[b0[7]][0] === it.owner || b0[7] === b0[12])) {
+        const [nx, ny] = this.toScreen(...this.borderPoint(b0[6], b0[7]));
+        const d = Math.hypot(nx - sx, ny - sy);
+        if (d > 4 * px) {
+          const ux = (nx - sx) / d;
+          const uy = (ny - sy) / d;
+          const st = (FRAME_W * px) / 2 + 3 * px;
+          attackArrow(ctx, sx + ux * st, sy + uy * st, sx + ux * (st + 22 * px), sy + uy * (st + 22 * px), '#9aa3a9', px, 0.6);
+        }
+        if (it.owner !== you) continue;
+      }
       if (it.owner === you) {
         const sel = it.rows.some((b) => selected.has(b[0]));
         const drawn = new Set<string>();
@@ -1185,6 +1362,22 @@ export class MapView {
         destArrow(ctx, Math.round(mx), Math.round(my + 14 - (FRAME_H * px) / 2 - 2 * px), color, px + 1);
         ctx.globalAlpha = 1;
       }
+    }
+    // Attack arrows: from each attacking group toward the middle of the region.
+    for (const at of attacks) {
+      if (!at.items.length) continue;
+      const gx = at.items.reduce((sum, it) => sum + it.tx, 0) / at.items.length;
+      const gy = at.items.reduce((sum, it) => sum + it.ty, 0) / at.items.length;
+      const reg = this.map.regions[at.region];
+      const [sx, sy] = this.toScreen(gx, gy);
+      const [ex, ey] = this.toScreen(reg.x, reg.y + 14 / scale);
+      const dist = Math.hypot(ex - sx, ey - sy);
+      if (dist < 26 * px) continue;
+      const ux = (ex - sx) / dist;
+      const uy = (ey - sy) / dist;
+      const start = (FRAME_W * px) / 2 + 4 * px;
+      const len = Math.max(14 * px, Math.min(70 * px, dist * 0.65 - start));
+      attackArrow(ctx, sx + ux * start, sy + uy * start, sx + ux * (start + len), sy + uy * (start + len), colorOf(players, at.owner), px);
     }
     const blink = Math.floor(now / 300) % 2;
     for (const [wx, wy] of swords) {
@@ -1240,7 +1433,9 @@ export class MapView {
       const pts = list.map((it) => this.toScreen(it.tx, it.ty));
       const minX = Math.min(...pts.map((p) => p[0]));
       const maxX = Math.max(...pts.map((p) => p[0]));
-      const cy = pts.reduce((sum, p) => sum + p[1], 0) / pts.length;
+      const minY = Math.min(...pts.map((p) => p[1]));
+      const maxY = Math.max(...pts.map((p) => p[1]));
+      const cy = (minY + maxY) / 2;
       const cx = (minX + maxX) / 2;
       if (cx < -80 || cy < -80 || cx > cw + 80 || cy > chh + 80) continue;
       fights++;
@@ -1248,7 +1443,7 @@ export class MapView {
       // The command layer: a red ring pulsing out around the fight.
       const pulse = (now % 1200) / 1200;
       const rx = (maxX - minX) / 2 + 18 * px + pulse * 8 * px;
-      const ry = 16 * px + pulse * 5 * px;
+      const ry = (maxY - minY) / 2 + 16 * px + pulse * 5 * px;
       const dot = px + 1;
       const n = Math.max(48, Math.round((Math.PI * (rx + ry)) / dot));
       // A steady inner ring, and one pulsing out from it.
@@ -1487,11 +1682,40 @@ export class MapView {
         ctx.fillRect(bx, Math.round(y0 + h - px - (i + 1) * cell), px, Math.max(px, Math.round(cell) - px));
       }
     }
+    // Defenders under attack: a shield with fort level, dug in and river.
+    if (it.shield && !it.moving) {
+      const sh = shieldSprite(it.shield.fort, it.shield.dug, it.shield.river);
+      blit(ctx, sh, x0 - (sh.width + 1) * px, y0 + px, px);
+    }
     // Selected: blinking corner brackets.
     if (selected && Math.floor(performance.now() / 400) % 2 === 0) {
       brackets(ctx, Math.round(p.x), Math.round(y0 + h / 2 + 2 * px), w / 2 + 2 * px, '#ffffff', px);
     }
   }
+}
+
+const shieldCache = new Map<string, HTMLCanvasElement>();
+/** A defender's shield: fort pips at the top, a blue wave for a river, a brown bar if dug in. */
+function shieldSprite(fort: number, dug: boolean, river: boolean): HTMLCanvasElement {
+  const key = `${fort}${dug}${river}`;
+  let c = shieldCache.get(key);
+  if (c) return c;
+  const rows = ['OOOOOOO', 'OGGGGGO', 'OGGGGGO', 'OGGGGGO', 'OGGGGGO', 'OGGGGGO', '.OGGGO.', '..OGO..', '...O...'].map((r) => r.split(''));
+  for (let i = 0; i < Math.min(3, fort); i++) rows[2][1 + i * 2] = 'K';
+  if (river) {
+    rows[4][1] = 'B';
+    rows[4][3] = 'B';
+    rows[4][5] = 'B';
+    rows[3][2] = 'B';
+    rows[3][4] = 'B';
+  }
+  if (dug) for (let x = 2; x <= 4; x++) rows[6][x] = 'D';
+  c = art(
+    rows.map((r) => r.join('')),
+    { G: '#c9d1d6', K: '#3b4248', B: '#4fa3e0', D: '#8a6a3d' },
+  );
+  shieldCache.set(key, c);
+  return c;
 }
 
 /** A hop's quick glide into the next region. */
@@ -1707,6 +1931,35 @@ function brackets(ctx: CanvasRenderingContext2D, x: number, y: number, half: num
     ctx.fillRect(dx > 0 ? cx : cx - l + px, cy, l, px);
     ctx.fillRect(cx, dy > 0 ? cy : cy - l + px, px, l);
   }
+}
+
+/**
+ * A thick pixel arrow (shaft, then a head) from (x0, y0) to its tip at (x1, y1): squares
+ * stamped along the line, a dark outline first, then the colour, then a lighter spine.
+ */
+function attackArrow(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string, px: number, alpha = 1): void {
+  const len = Math.hypot(x1 - x0, y1 - y0);
+  if (len < 1) return;
+  const ux = (x1 - x0) / len;
+  const uy = (y1 - y0) / len;
+  const head = Math.min(len * 0.45, 9 * px);
+  const width = (d: number) => (d < len - head ? 3 * px : Math.max(px, 8 * px * ((len - d) / head)));
+  ctx.globalAlpha = alpha;
+  for (const [pad, fill] of [
+    [px, INK],
+    [0, color],
+  ] as const) {
+    ctx.fillStyle = fill;
+    for (let d = 0; d <= len; d += Math.max(1, px / 2)) {
+      const w = width(d) + pad * 2;
+      ctx.fillRect(Math.round(x0 + ux * d - w / 2), Math.round(y0 + uy * d - w / 2), Math.round(w), Math.round(w));
+    }
+  }
+  ctx.fillStyle = shade(color, 1.35);
+  for (let d = 0; d < len - head; d += Math.max(1, px / 2)) {
+    ctx.fillRect(Math.round(x0 + ux * d - px / 2), Math.round(y0 + uy * d - px / 2), px, px);
+  }
+  ctx.globalAlpha = 1;
 }
 
 /** A pixel arrow pointing down, its tip at (x, y): where your units are heading. */
