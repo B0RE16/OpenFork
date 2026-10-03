@@ -314,7 +314,7 @@ export class Bot {
     if (this.style.merges) this.mergeSmall(sim, blobs);
 
     // Units stuck at the edge of a full region count as free again.
-    const busy = (b: Blob) => (b.path.length > 0 && b.progress < 1) || (b.progress === 0 && sim.contested(b.region));
+    const busy = (b: Blob) => (b.path.length > 0 && b.progress < 1) || (b.progress === 0 && sim.besieged(b.region, b.owner));
     let idle = blobs.filter((b) => sim.state.blobs.has(b.id) && !busy(b));
     // Where our units are or are heading, so we don't send more than fit.
     this.heading = new Map();

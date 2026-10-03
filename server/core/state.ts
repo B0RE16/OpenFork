@@ -36,6 +36,8 @@ export interface Blob {
   from: number;
   /** 0..1, set by the supply pass. */
   supply: number;
+  /** The neighbouring region it is attacking from its own (-1: none). Set each tick. */
+  attacking: number;
 }
 
 export interface ProductionLine {

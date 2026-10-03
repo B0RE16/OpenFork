@@ -1047,7 +1047,8 @@ export class GameScreen {
 
   private unitRow(b: BlobRow, selectable: boolean): HTMLElement {
     const type = UNIT_INDEX[b[2]];
-    const where = b[8] > 0 ? `→ ${this.map.regions[b[7]].name}` : this.map.regions[b[6]].name;
+    const where =
+      b[8] > 0 ? `→ ${this.map.regions[b[7]].name}` : b[11] & 4 && b[7] >= 0 ? `attacking ${this.map.regions[b[7]].name}` : this.map.regions[b[6]].name;
     const row = el('div', { class: `unit${this.selected.has(b[0]) ? ' sel' : ''}` }, [
       el('span', { class: 'swatch', style: `background:${colorOf(this.players, b[1])}` }),
       el('span', {}, [`${type === 'tank' ? 'ARM' : 'INF'} ${Math.ceil(b[3])}/${b[4]}`]),

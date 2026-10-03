@@ -81,8 +81,8 @@ export interface GamePlayer {
 }
 
 /** One blob: [id, owner, type (0 infantry, 1 tank), strength, size, training, region,
- * next region or -1, progress 0..1, entrench 0..1, supply 0..1, flags (1 hold, 2 crossed river),
- * the region it came into its region from or -1]. */
+ * next region or -1, progress 0..1, entrench 0..1, supply 0..1, flags (1 hold, 2 crossed river,
+ * 4 attacking the next region from its own), the region it came into its region from or -1]. */
 export type BlobRow = [number, number, number, number, number, number, number, number, number, number, number, number, number];
 
 /** One region: [owner, fort, city level, flags (1 barracks, 2 factory, 4 supplied), capture

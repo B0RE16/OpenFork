@@ -124,26 +124,41 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
   fight costs once, however often the way out changes.
 - **Zone of control:** crossing enemy-owned land is slower than crossing your own, and forts
   there slow it more. A fort without units in it only slows; it can't stop anything.
-- **Running into enemies:** if an enemy region on the path holds enemy blobs, the blob stops
-  and a battle starts.
+- **Running into enemies (border battles):** a blob never walks into a region with enemy
+  blobs in it. It stops in its own region and **attacks across the border** at once; when
+  the defenders are gone it walks in (the normal hop time) and captures as usual. If enemies
+  get into the region first while it's on its way, the hop is called off and it attacks
+  from the border instead.
 - **Capturing:** an empty enemy or neutral region is captured after the blob **holds it for a
   while**. The time scales with the region's size and terrain, forts make it longer, and
   training makes it shorter.
 - **How a fight looks:** units in their own region hold the middle (with a shield showing
   their fort level, whether they're dug in, and a river crossed by the attackers); units
-  attacking or taking a region get an arrow in their colour sitting halfway across the
-  border they crossed, pointing in, one per border; the units stand on their own side
-  just behind its tail. One crossed swords per fight, beside the main arrow. Borders between countries at war show as two-colour front lines; units
+  attacking a region from next door, or taking an empty one, get an arrow in their colour
+  sitting halfway across the border, pointing in, one per border; the units stand on their
+  own side just behind its tail. One crossed swords per fight, beside the main arrow. Borders between countries at war show as two-colour front lines; units
   pulling out of a fight get a grey arrow back.
-- **Retreat:** a blob can leave a battle, but only backwards: to the region it came from or
-  to a neighbouring region its owner holds, never on past the enemy. It loses strength and
-  training while disengaging.
+- **Retreat:** a blob under attack (enemies in its region, or attacking it from next door)
+  is pinned: it can hit back at a neighbour with enemies in it (it stays put), or retreat,
+  only backwards: to the region it came from or to a neighbouring region its owner holds,
+  never on past the enemy. Retreating costs strength and training (once, however often the
+  way out changes). **Attackers break off for free**: they never left home.
 
-## 6. Battles (contested regions)
-- A region with hostile blobs in it is **contested**. Fighting is **continuous attrition**:
-  every tick each side deals damage = strength × attack × training × terrain/type modifiers.
-- **Defender bonus = fort + entrenchment + river crossing**, added together.
-  **Entrenchment** builds up while a blob holds still and is lost when it moves.
+## 6. Battles
+- **A battle is about a region:** the blobs standing in it, and the blobs attacking it from
+  neighbouring regions. Fights inside a region still happen when both sides end up in it
+  (war declared while sharing neutral land, or arriving in the same instant). Fighting is
+  **continuous attrition**: every tick each side deals damage = strength × attack ×
+  training × terrain (of the region fought over) × supply.
+- **Each blob deals damage in one battle** (the region it attacks, else its own) and takes
+  it in every battle it's part of: attacking out while your own region is attacked means
+  being hit at home while hitting only forward. Two sides attacking each other across a
+  border both hit, and each defends with its own region's fort.
+- **Defender bonus = fort + entrenchment + river crossing**, added together, for the region
+  owner's blobs standing in it. The river bonus counts the attackers coming over a river
+  edge. **Entrenchment** builds up while a blob holds still and is lost when it moves or
+  attacks.
+- **Capturing waits** while a region is fought over, inside or from next door.
 - Anyone can reinforce either side mid-battle. With 3 or more sides, **each side spreads its
   damage over all hostile sides in proportion to their strength**.
 - The battle ends when only one side has blobs left. If the winner isn't the owner, the

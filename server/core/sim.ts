@@ -432,10 +432,11 @@ export class Sim {
         b.path = route;
         continue;
       }
-      // Enemies stand here (this unit may be mid-hop, so not counted as standing itself).
-      if (route.length && this.hostileIn(b.region, b.owner)) {
-        // In a fight: no slipping past the enemy, only a retreat (back where it came from, or
-        // to its own land), and that costs (once: changing the way out is free).
+      // Under attack here (enemies in the region, or attacking it from next door): no slipping
+      // away past them. It may hit back at a neighbour with enemies in it (it stays put), or
+      // retreat (back where it came from, or to its own land), which costs (once: changing
+      // the way out is free). Attackers whose own region isn't under attack stop for free.
+      if (route.length && this.besieged(b.region, b.owner) && !this.hostileIn(route[0], b.owner)) {
         if (route[0] !== b.from && this.state.regions[route[0]].owner !== b.owner) {
           refused = 'in a fight: units can only retreat to your own land';
           continue;
@@ -801,14 +802,17 @@ export class Sim {
         b.entrench = 0;
       }
       const next = b.path[0];
+      // Enemies stand there: attack them from here (see battles) instead of going in.
+      if (b.progress === 0 && this.hostileIn(next, b.owner)) continue;
       if (b.progress === 0) this.touch(); // leaving its region
       if (b.progress < 1) {
         b.progress = Math.min(1, b.progress + dt / this.travelSeconds(b.type, b.owner, b.region, next));
       }
       if (b.progress >= 1) {
+        const was = b.region;
         this.arrive(b);
         // Only passing through its own land: keep going this tick, no stop in the region.
-        if (b.progress === 0 && b.path.length && !b.hold) {
+        if (b.region !== was && b.progress === 0 && b.path.length && !b.hold && !this.hostileIn(b.path[0], b.owner)) {
           b.progress = Math.min(1, dt / this.travelSeconds(b.type, b.owner, b.region, b.path[0]));
           b.entrench = 0;
           this.touch();
@@ -822,6 +826,12 @@ export class Sim {
     if (this.closedTo(b.owner, to)) {
       // Peace was made on the way: stay out of their land.
       b.path = [];
+      b.progress = 0;
+      this.touch();
+      return;
+    }
+    // Enemies got there first: no going in, attack them from the border instead.
+    if (this.hostileIn(to, b.owner)) {
       b.progress = 0;
       this.touch();
       return;
@@ -847,7 +857,6 @@ export class Sim {
     const to = b.path[0];
     const edge = this.world.edge(b.region, to);
     const rs = this.state.regions[to];
-    const hostile = this.hostileIn(to, b.owner);
     b.path.shift();
     b.from = b.region;
     b.region = to;
@@ -855,38 +864,56 @@ export class Sim {
     this.touch();
     b.entrench = 0;
     b.crossedRiver = !!edge?.river && rs.owner !== b.owner;
-    b.hold = b.path.length > 0 && (rs.owner !== b.owner || hostile);
-    if (hostile) {
-      this.events.push({ kind: 'battle', region: to, sides: [...this.ownersIn(to)] });
-    }
+    // Someone else's land: take it before going on.
+    b.hold = b.path.length > 0 && rs.owner !== b.owner;
   }
 
   // -- battles ----------------------------------------------------------------------------
 
-  /** Runs every contested region's fight; returns the ids of blobs that fought. */
+  /**
+   * Runs every fight; returns the ids of blobs that fought. A battle is about a region: the
+   * units standing in it, and the units attacking it from neighbouring regions (border
+   * battles: attackers stay in their own region until the defenders are gone). Each unit
+   * deals damage in one battle (the region it attacks, else its own) and takes it in every
+   * battle it's part of: a unit attacking out while its own region is attacked is flanked.
+   */
   private battles(dt: number): Set<number> {
     const fighting = new Set<number>();
-    const byRegion = new Map<number, Blob[]>();
+    const standing = this.standing();
+    // Who attacks where (units waiting to go into a region with enemies standing in it).
+    const attackersOf = new Map<number, Blob[]>();
+    const started = new Set<number>();
     for (const b of this.state.blobs.values()) {
-      if (b.progress > 0) continue;
-      const list = byRegion.get(b.region);
-      if (list) list.push(b);
-      else byRegion.set(b.region, [b]);
+      const t = b.progress === 0 && !b.hold && b.path.length > 0 && this.hostileIn(b.path[0], b.owner) ? b.path[0] : -1;
+      if (t >= 0 && b.attacking !== t) started.add(t);
+      b.attacking = t;
+      if (t >= 0) attackersOf.set(t, [...(attackersOf.get(t) ?? []), b]);
     }
+    this.attackers = attackersOf;
+    for (const t of started) {
+      const sides = new Set([...this.ownersIn(t), ...(attackersOf.get(t) ?? []).map((b) => b.owner)]);
+      this.events.push({ kind: 'battle', region: t, sides: [...sides] });
+    }
+    const regions = new Set([...attackersOf.keys()]);
+    for (const region of standing.keys()) if (this.contested(region)) regions.add(region);
+
     const damage = new Map<Blob, number>();
-    for (const [region, blobs] of byRegion) {
+    const strengthOf = (list: Blob[]) => list.reduce((s, b) => s + b.strength, 0);
+    for (const region of regions) {
+      const members = [...(standing.get(region) ?? []), ...(attackersOf.get(region) ?? [])];
       const sides = new Map<number, Blob[]>();
-      for (const b of blobs) sides.set(b.owner, [...(sides.get(b.owner) ?? []), b]);
-      if (sides.size < 2) continue;
+      for (const b of members) sides.set(b.owner, [...(sides.get(b.owner) ?? []), b]);
       const foes = (s: number) => [...sides.keys()].filter((t) => this.atWar(s, t));
       if (![...sides.keys()].some((s) => foes(s).length)) continue;
       const rs = this.state.regions[region];
       const terrain = this.world.regions[region].terrain;
-      const strengthOf = (list: Blob[]) => list.reduce((s, b) => s + b.strength, 0);
-      for (const [s, attackers] of sides) {
+      // Across a river: attackers coming over a river edge, or units that crossed one to get in.
+      const overRiver = (b: Blob) => (b.region === region ? b.crossedRiver : !!this.world.edge(b.region, region)?.river);
+      for (const [s, list] of sides) {
+        const dealers = list.filter((b) => b.attacking === region || (b.region === region && b.attacking < 0));
         const power =
           DAMAGE_RATE *
-          attackers.reduce(
+          dealers.reduce(
             (sum, b) =>
               sum +
               b.strength *
@@ -896,20 +923,21 @@ export class Sim {
                 (0.5 + 0.5 * b.supply),
             0,
           );
-        const total = attackers.reduce((sum, b) => sum + b.strength, 0);
-        const riverShare = total > 0 ? attackers.filter((b) => b.crossedRiver).reduce((x, b) => x + b.strength, 0) / total : 0;
+        const total = strengthOf(dealers);
+        const riverShare = total > 0 ? strengthOf(dealers.filter(overRiver)) / total : 0;
         const mine = foes(s);
         let enemies = 0;
         for (const t of mine) enemies += strengthOf(sides.get(t) as Blob[]);
+        if (enemies <= 0 || power <= 0) continue;
         for (const t of mine) {
-          const defenders = sides.get(t) as Blob[];
-          if (enemies <= 0) continue;
-          const st = strengthOf(defenders);
+          const targets = sides.get(t) as Blob[];
+          const st = strengthOf(targets);
           const share = (power * dt * st) / enemies;
-          for (const d of defenders) {
+          for (const d of targets) {
             let taken = (share * d.strength) / st / UNITS[d.type].defense;
             taken *= 1 - (TRAINING_PROTECTION * d.training) / MAX_TRAINING;
-            if (rs.owner === t) taken /= 1 + FORT_BONUS * rs.fort + ENTRENCH_BONUS * d.entrench + RIVER_BONUS * riverShare;
+            // The region's owner, standing in it, defends with its fort, dug in, behind the river.
+            if (rs.owner === t && d.region === region) taken /= 1 + FORT_BONUS * rs.fort + ENTRENCH_BONUS * d.entrench + RIVER_BONUS * riverShare;
             damage.set(d, (damage.get(d) ?? 0) + taken);
           }
         }
@@ -924,11 +952,25 @@ export class Sim {
     return fighting;
   }
 
+  /** Units attacking each region from next door, as of the last battle pass. */
+  private attackers = new Map<number, Blob[]>();
+
+  /** Someone attacks this region from next door. */
+  private underAttack(region: number): boolean {
+    return this.attackers.has(region);
+  }
+
+  /** Units of `owner` in this region are under attack: enemies stand in it, or attack it from next door. */
+  besieged(region: number, owner: number): boolean {
+    if (this.hostileIn(region, owner)) return true;
+    return (this.attackers.get(region) ?? []).some((b) => this.state.blobs.has(b.id) && this.atWar(b.owner, owner));
+  }
+
   // -- capturing --------------------------------------------------------------------------
 
   private captures(dt: number): void {
     this.state.regions.forEach((rs, i) => {
-      if (this.contested(i)) return; // fighting: capture waits
+      if (this.contested(i) || this.underAttack(i)) return; // fighting: capture waits
       // Who could take it: anyone there who isn't the owner (peaceful neighbours share
       // neutral land; whoever started capturing first keeps going).
       const takers = [...this.ownersIn(i)].filter((o) => o !== rs.owner && (rs.owner === NEUTRAL || this.atWar(o, rs.owner)));
@@ -1113,6 +1155,7 @@ export class Sim {
       from: -1,
       supply: 1,
       hold: false,
+      attacking: -1,
     };
     this.state.blobs.set(b.id, b);
     this.touch();

@@ -210,6 +210,106 @@ describe('surrender', () => {
   });
 });
 
+/** A at 0..2, B at 3..7, at war; edge 2-3 is a river if asked. */
+function front(river = false) {
+  const map = makeMap(
+    Array.from({ length: 8 }, (_, i) => ({ country: i < 4 ? 'A' : 'B' })),
+    chain(8).map(([a, b]) => (a === 2 && river ? [a, b, { river: true }] : [a, b])) as Array<[number, number] | [number, number, { river: boolean }]>,
+    [
+      { id: 'A', capital: 0 },
+      { id: 'B', capital: 7 },
+    ],
+  );
+  const s = sim(map, ['A', 'B']);
+  clearBlobs(s);
+  s.state.regions.forEach((r, i) => (r.owner = i <= 2 ? 0 : 1));
+  s.declareWar(0, 1);
+  return s;
+}
+
+describe('border battles', () => {
+  it('attacks a defended neighbour from home; walks in and takes it once the defenders are gone', () => {
+    const s = front();
+    const a = place(s, 0, 'infantry', 2, 40);
+    const d = place(s, 1, 'infantry', 3, 5);
+    assert.equal(s.move(0, [a.id], 3), null);
+    run(s, 2);
+    assert.equal(a.region, 2, 'stays home while it fights');
+    assert.equal(a.progress, 0);
+    assert.equal(a.attacking, 3);
+    assert.ok(a.strength < 40 && d.strength < 5, 'both sides take damage');
+    assert.ok(s.drainEvents().some((e) => e.kind === 'battle' && e.region === 3));
+    run(s, 120);
+    assert.ok(!s.state.blobs.has(d.id));
+    assert.equal(a.region, 3, 'advanced after the win');
+    assert.equal(s.state.regions[3].owner, 0, 'and took it');
+  });
+
+  it('forts and a river between help the defenders', () => {
+    const hit = (fort: number, river: boolean) => {
+      const s = front(river);
+      s.state.regions[3].fort = fort;
+      const a = place(s, 0, 'infantry', 2, 20);
+      const d = place(s, 1, 'infantry', 3, 20);
+      s.move(0, [a.id], 3);
+      run(s, 3);
+      return 20 - d.strength;
+    };
+    assert.ok(hit(2, false) < hit(0, false));
+    assert.ok(hit(0, true) < hit(0, false));
+  });
+
+  it('attacking each other across a border: both fight, neither goes in', () => {
+    const s = front();
+    const a = place(s, 0, 'infantry', 2, 20);
+    const b = place(s, 1, 'infantry', 3, 20);
+    s.move(0, [a.id], 3);
+    s.move(1, [b.id], 2);
+    run(s, 3);
+    assert.equal(a.region, 2);
+    assert.equal(b.region, 3);
+    assert.ok(a.strength < 20 && b.strength < 20);
+  });
+
+  it('enemies getting there first turn a move into an attack from the border', () => {
+    const s = front();
+    s.state.regions[3].owner = NEUTRAL;
+    const a = place(s, 0, 'infantry', 2);
+    s.move(0, [a.id], 3);
+    run(s, CROSS_SECONDS / 2);
+    assert.ok(a.progress > 0);
+    place(s, 1, 'infantry', 3);
+    run(s, CROSS_SECONDS);
+    assert.equal(a.region, 2);
+    assert.equal(a.progress, 0);
+    assert.equal(a.attacking, 3);
+  });
+
+  it('defenders attacked from next door are pinned; attackers break off for free', () => {
+    const s = front();
+    s.state.regions[4].owner = NEUTRAL;
+    const a = place(s, 0, 'infantry', 2, 20);
+    const d = place(s, 1, 'infantry', 3, 20);
+    s.move(0, [a.id], 3);
+    run(s, 1);
+    // No slipping away into land that isn't theirs.
+    assert.match(s.move(1, [d.id], 4) ?? '', /only retreat/);
+    // Hitting back at the attackers is allowed, and free: it stays put.
+    const before = d.strength;
+    assert.equal(s.move(1, [d.id], 2), null);
+    assert.equal(d.strength, before);
+    // Retreating to their own land costs.
+    s.state.regions[4].owner = 1;
+    const now = d.strength;
+    assert.equal(s.move(1, [d.id], 4), null);
+    assert.ok(d.strength <= now * (1 - RETREAT_STRENGTH_LOSS) + 1e-9);
+    // The attacker just stops, losing nothing.
+    const mine = a.strength;
+    assert.equal(s.stop(0, [a.id]), null);
+    assert.equal(a.strength, mine);
+  });
+});
+
 describe('battles', () => {
   it('units in a fight can only retreat, never slip past the enemy', () => {
     const s = duel();

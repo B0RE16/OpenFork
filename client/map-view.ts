@@ -1170,15 +1170,21 @@ export class MapView {
     const px = this.pixel();
     const scale = this.cam.scale;
     const atWar = (a: number, b: number) => snap.wars.some(([x, y]) => (x === a && y === b) || (x === b && y === a));
+    // Attacking the next region from its own (border battle): drawn at the region it attacks.
+    const attacking = (b: BlobRow) => (b[11] & 4) !== 0 && b[8] === 0 && b[7] >= 0;
     // On the move: travelling to the next region, or passing through on the way.
-    const transit = (b: BlobRow) => b[8] > 0 || (b[7] >= 0 && !(b[11] & 1));
+    const transit = (b: BlobRow) => !attacking(b) && (b[8] > 0 || (b[7] >= 0 && !(b[11] & 1)));
 
     const byRegion = new Map<number, BlobRow[]>();
-    for (const b of snap.blobs) byRegion.set(b[6], [...(byRegion.get(b[6]) ?? []), b]);
+    for (const b of snap.blobs) {
+      const at = attacking(b) ? b[7] : b[6];
+      byRegion.set(at, [...(byRegion.get(at) ?? []), b]);
+    }
 
     // Individual tokens if zoomed in and they fit, else stacks. A region's own units (and units
-    // on their way out) stand in the middle; units in a region their country doesn't hold are
-    // attacking or taking it, and stand on the border they crossed, one group per border.
+    // on their way out) stand in the middle. Units attacking it from next door stand on their
+    // own side of the border, behind their arrow; units in a region their country doesn't
+    // hold are taking it, and stand on the border they crossed. One group per border.
     const items: Item[] = [];
     const step = Math.max(FRAME_W * px, PLATE_MIN_W) + 3;
     const sideGap = 14 * px;
@@ -1200,7 +1206,14 @@ export class MapView {
       const attackers = new Map<string, { owner: number; side: number; rows: BlobRow[] }>();
       const owners = [...new Set(sorted.map((b) => b[1]))].sort((a, b) => (a === you ? -1 : b === you ? 1 : a - b));
       for (const o of owners) {
-        const rows = sorted.filter((b) => b[1] === o);
+        const rows = sorted.filter((b) => b[1] === o && !attacking(b));
+        for (const b of sorted) {
+          if (b[1] !== o || !attacking(b)) continue;
+          const k = `${o}:${b[6]}`;
+          const g = attackers.get(k) ?? { owner: o, side: b[6], rows: [] };
+          g.rows.push(b);
+          attackers.set(k, g);
+        }
         const parked = rows.filter((b) => !transit(b));
         const going = new Map<number, BlobRow[]>();
         for (const b of rows) if (transit(b)) going.set(b[7], [...(going.get(b[7]) ?? []), b]);
@@ -1224,7 +1237,9 @@ export class MapView {
       // Defenders under attack carry a shield with what helps them hold.
       const besieged = sorted.some((b) => b[1] !== holder && !transit(b) && holder >= 0 && atWar(b[1], holder));
       if (besieged) {
-        const river = sorted.some((b) => b[1] !== holder && (b[11] & 2) !== 0);
+        // Attackers across a river: over a river edge from next door, or having crossed one.
+        const overRiver = (b: BlobRow) => (attacking(b) ? !!this.map.regions[b[6]].neighbors.find((n) => n.id === region)?.river : (b[11] & 2) !== 0);
+        const river = sorted.some((b) => b[1] !== holder && overRiver(b));
         for (const sl of middle) {
           if (sl.owner === holder && !sl.moving) {
             (sl as Item).shield = { fort: snap.regions[region][1], dug: sl.rows.some((b) => b[9] >= 0.5), river };
@@ -1326,7 +1341,11 @@ export class MapView {
     const contested = new Set<number>();
     {
       const standing = new Map<number, Set<number>>();
-      for (const b of snap.blobs) if (!transit(b)) standing.set(b[6], (standing.get(b[6]) ?? new Set()).add(b[1]));
+      for (const b of snap.blobs) {
+        if (transit(b)) continue;
+        const at = attacking(b) ? b[7] : b[6];
+        standing.set(at, (standing.get(at) ?? new Set()).add(b[1]));
+      }
       for (const [r, o] of standing) {
         const list = [...o];
         if (list.some((a) => list.some((c) => a !== c && atWar(a, c)))) contested.add(r);
@@ -1437,7 +1456,7 @@ export class MapView {
     const byRegion = new Map<number, Item[]>();
     for (const it of items) {
       if (it.moving) continue;
-      const r = it.rows[0][6];
+      const r = battleRegion(it.rows[0]);
       byRegion.set(r, [...(byRegion.get(r) ?? []), it]);
     }
     const W = this.map.width;
@@ -1499,11 +1518,13 @@ export class MapView {
   noteLosses(prev: Snapshot, next: Snapshot): void {
     const before = new Map(prev.blobs.map((b) => [b[0], b[3]]));
     const owners = new Map<number, Set<number>>();
-    for (const b of next.blobs) if (b[8] === 0) owners.set(b[6], (owners.get(b[6]) ?? new Set()).add(b[1]));
+    for (const b of next.blobs) if (b[8] === 0) owners.set(battleRegion(b), (owners.get(battleRegion(b)) ?? new Set()).add(b[1]));
     const now = performance.now();
     for (const b of next.blobs) {
       const was = before.get(b[0]);
-      if (was === undefined || (owners.get(b[6])?.size ?? 0) < 2 || was - b[3] <= 0) continue;
+      // Hit in a fight: at home, or across the border it attacks (or both).
+      const hit = (owners.get(b[6])?.size ?? 0) > 1 || (owners.get(battleRegion(b))?.size ?? 0) > 1;
+      if (was === undefined || !hit || was - b[3] <= 0) continue;
       this.shaking.set(b[0], now + 300);
     }
   }
@@ -1682,6 +1703,11 @@ export class MapView {
       brackets(ctx, Math.round(p.x), Math.round(y0 + h / 2 + 2 * px), w / 2 + 2 * px, '#ffffff', px);
     }
   }
+}
+
+/** Where a unit fights: the region it attacks from next door, else its own. */
+function battleRegion(b: BlobRow): number {
+  return (b[11] & 4) !== 0 && b[8] === 0 && b[7] >= 0 ? b[7] : b[6];
 }
 
 const shieldCache = new Map<string, HTMLCanvasElement>();
