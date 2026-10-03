@@ -98,6 +98,46 @@ describe('movement', () => {
     assert.equal(s.state.regions[4].owner, 0);
   });
 
+  it('turns back mid-hop at once instead of finishing the hop', () => {
+    const s = duel();
+    clearBlobs(s);
+    for (const r of [1, 2, 3]) s.state.regions[r].owner = 0;
+    const b = place(s, 0, 'infantry', 2);
+    s.move(0, [b.id], 3);
+    run(s, CROSS_SECONDS / 2);
+    assert.equal(b.region, 2);
+    assert.ok(b.progress > 0.3 && b.progress < 0.7);
+    // Back where it is: it just stops.
+    assert.equal(s.move(0, [b.id], 2), null);
+    assert.equal(b.progress, 0);
+    assert.deepEqual(b.path, []);
+    // The other way: it heads there without stepping into 3 first.
+    s.move(0, [b.id], 3);
+    run(s, CROSS_SECONDS / 2);
+    s.move(0, [b.id], 1);
+    assert.equal(b.progress, 0);
+    run(s, CROSS_SECONDS * 1.5);
+    assert.equal(b.region, 1);
+    assert.equal(b.from, 2, 'came straight from 2, never via 3');
+  });
+
+  it('a new route the same way keeps the hop going; halting stops mid-hop', () => {
+    const s = duel();
+    clearBlobs(s);
+    for (const r of [1, 2, 3]) s.state.regions[r].owner = 0;
+    const b = place(s, 0, 'infantry', 1);
+    s.move(0, [b.id], 2);
+    run(s, CROSS_SECONDS / 2);
+    const p = b.progress;
+    s.move(0, [b.id], 3);
+    assert.equal(b.progress, p);
+    assert.deepEqual(b.path, [2, 3]);
+    assert.equal(s.stop(0, [b.id]), null);
+    assert.equal(b.region, 1);
+    assert.equal(b.progress, 0);
+    assert.deepEqual(b.path, []);
+  });
+
   it('waits at the edge of a full region', () => {
     const s = duel();
     clearBlobs(s);
@@ -187,6 +227,23 @@ describe('battles', () => {
     assert.equal(s.move(1, [attacker.id], 3), null, 'back the way it came');
     assert.deepEqual(attacker.path, [3]);
     assert.ok(attacker.strength < before, 'retreating costs');
+  });
+
+  it('a unit pulling out of a fight can change its way out, but not turn forward', () => {
+    const s = duel();
+    clearBlobs(s);
+    s.declareWar(1, 0);
+    s.state.regions[2].owner = 0;
+    s.state.regions[3].owner = 1;
+    place(s, 0, 'infantry', 2);
+    const attacker = place(s, 1, 'infantry', 2);
+    attacker.from = 3;
+    assert.equal(s.move(1, [attacker.id], 3), null);
+    run(s, 0.5);
+    assert.ok(attacker.progress > 0);
+    assert.match(s.move(1, [attacker.id], 0) ?? '', /only retreat/);
+    assert.deepEqual(attacker.path, [3], 'still pulling out');
+    assert.ok(attacker.progress > 0);
   });
 
   it('a fort lets an equal defender win', () => {

@@ -118,6 +118,10 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
   for split, merge and build.
 - **Pathing:** blobs path through any region. Infantry takes about 5.5 s to cross one plains
   region; terrain changes that, and roads make it faster.
+- **Changing orders mid-hop:** a hop is a timer, and the unit stays in its region until it
+  ends. A new order the same way keeps the progress; any other order, or Halt, turns the
+  unit back at once (it never has to step into the next region first). Pulling out of a
+  fight costs once, however often the way out changes.
 - **Zone of control:** crossing enemy-owned land is slower than crossing your own, and forts
   there slow it more. A fort without units in it only slows; it can't stop anything.
 - **Running into enemies:** if an enemy region on the path holds enemy blobs, the blob stops

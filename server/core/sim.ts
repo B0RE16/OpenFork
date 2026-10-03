@@ -423,28 +423,31 @@ export class Sim {
     }
     let refused: string | null = null;
     for (const b of blobs) {
-      // Waiting at the edge of a full region: turn back and go from where it came.
-      if (b.progress >= 1) {
-        b.progress = 0;
-        this.touch();
-      }
-      // On the move: finish the current hop, then follow the new route from there.
-      const start = b.progress > 0 ? b.path[0] : b.region;
-      const route = this.route(b.type, b.owner, b.training, start, target);
+      // A unit mid-hop is still in its region (the hop is a timer): a new route the same way
+      // keeps the hop's progress; any other route, or staying, turns it back at once.
+      const route = this.route(b.type, b.owner, b.training, b.region, target);
       if (!route) return 'no route';
-      if (b.progress > 0) {
-        b.path = [b.path[0], ...route];
+      const leaving = b.progress > 0;
+      if (leaving && route.length && route[0] === b.path[0]) {
+        b.path = route;
         continue;
       }
-      if (route.length && this.contested(b.region)) {
+      // Enemies stand here (this unit may be mid-hop, so not counted as standing itself).
+      if (route.length && this.hostileIn(b.region, b.owner)) {
         // In a fight: no slipping past the enemy, only a retreat (back where it came from, or
-        // to its own land), and that costs.
+        // to its own land), and that costs (once: changing the way out is free).
         if (route[0] !== b.from && this.state.regions[route[0]].owner !== b.owner) {
           refused = 'in a fight: units can only retreat to your own land';
           continue;
         }
-        b.strength *= 1 - RETREAT_STRENGTH_LOSS;
-        b.training = Math.max(0, b.training - RETREAT_TRAINING_LOSS);
+        if (!leaving) {
+          b.strength *= 1 - RETREAT_STRENGTH_LOSS;
+          b.training = Math.max(0, b.training - RETREAT_TRAINING_LOSS);
+        }
+      }
+      if (leaving) {
+        b.progress = 0;
+        this.touch();
       }
       b.path = route;
       b.hold = false;
@@ -456,7 +459,10 @@ export class Sim {
     const blobs = this.own(playerId, blobIds);
     if (typeof blobs === 'string') return blobs;
     for (const b of blobs) {
-      b.path = b.progress > 0 ? [b.path[0]] : [];
+      // Halts at once, mid-hop too (the hop is a timer; the unit hasn't left yet).
+      if (b.progress > 0) this.touch();
+      b.path = [];
+      b.progress = 0;
       b.hold = false;
     }
     return null;
