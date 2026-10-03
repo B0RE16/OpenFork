@@ -757,6 +757,20 @@ export class MapView {
     return best;
   }
 
+  /** Which way an attack across the border from `side` into `region` points (unit vector). */
+  private attackDir(region: number, side: number): [number, number] {
+    const reg = this.map.regions[region];
+    const [bx, by] = this.borderPoint(region, side);
+    let [dx, dy] = [reg.x - bx, reg.y - by];
+    if (Math.hypot(dx, dy) < 2) {
+      // The border runs through the middle: point away from the side region instead.
+      const from = this.map.regions[side];
+      [dx, dy] = [reg.x - from.x, reg.y - from.y];
+    }
+    const d = Math.hypot(dx, dy) || 1;
+    return [dx / d, dy / d];
+  }
+
   /** Where a building of this kind in this region stands (or will), in map pixels. */
   private siteOf(region: number, kind: BuildingKind, row: Snapshot['regions'][number], done: boolean): [number, number] {
     const r = this.map.regions[region];
@@ -1236,21 +1250,14 @@ export class MapView {
       let biggest: (typeof attacks)[number] | null = null;
       let fightBy = 0;
       for (const g of attackers.values()) {
-        let [bx, by] = this.borderPoint(region, g.side);
-        // A small region on screen: stand further back on the line of attack, so the arrow
-        // fits between the attackers and the middle.
-        const [mx, my] = [reg.x, reg.y + 14 / scale];
-        const need = (FRAME_W * px + 12 * px + (ARROW_LEN - 4) * px) / scale;
-        if (Math.hypot(bx - mx, by - my) < need) {
-          const from = this.map.regions[g.side];
-          let [dx, dy] = [bx - mx, by - my];
-          if (Math.hypot(dx, dy) < 1 / scale) [dx, dy] = [from.x - reg.x, from.y - reg.y];
-          const d = Math.hypot(dx, dy) || 1;
-          [bx, by] = [mx + (dx / d) * need, my + (dy / d) * need];
-        }
+        // The arrow straddles the border; the group stands on its own side, behind the tail.
+        const [bx0, by0] = this.borderPoint(region, g.side);
+        const [ux, uy] = this.attackDir(region, g.side);
         const group = `a:${g.owner}:${region}:${g.side}`;
         const slots = slot(group, g.rows, g.owner, false, group, single);
         const w = slots.length * step;
+        const back = (ARROW_LEN * px) / 2 + Math.abs(ux) * ((FRAME_W * px) / 2 + (w - step) / 2) + Math.abs(uy) * FRAME_H * px * 0.8 + 2 * px;
+        const [bx, by] = [bx0 - (ux * back) / scale, by0 - (uy * back) / scale];
         const made: Item[] = [];
         slots.forEach((sl, i) => {
           const it = { ...sl, tx: bx + (-w / 2 + step / 2 + i * step) / scale, ty: by };
@@ -1379,37 +1386,20 @@ export class MapView {
         ctx.globalAlpha = 1;
       }
     }
-    // Attack arrows: from each attacking group, pointing the way it attacks (from the border
-    // it crossed toward the middle), even if a crowded screen pushed the group aside.
+    // Attack arrows: halfway across the border each attack crossed, pointing in. They stay on
+    // the border even if a crowded screen pushed the group aside.
     const shown = new Set(items);
     for (const at of attacks) {
-      const here = at.items.filter((it) => shown.has(it));
-      if (!here.length) continue;
-      const gx = here.reduce((sum, it) => sum + it.tx, 0) / here.length;
-      const gy = here.reduce((sum, it) => sum + it.ty, 0) / here.length;
-      const reg = this.map.regions[at.region];
-      const [sx, sy] = this.toScreen(gx, gy);
+      if (!at.items.some((it) => shown.has(it))) continue;
       const [bx, by] = this.toScreen(...this.borderPoint(at.region, at.side));
-      const [ex, ey] = this.toScreen(reg.x, reg.y + 14 / scale);
-      let dx = ex - bx;
-      let dy = ey - by;
-      if (Math.hypot(dx, dy) < 2) {
-        // The border sits on the middle: point away from the side region instead.
-        const from = this.map.regions[at.side];
-        [dx, dy] = [reg.x - from.x, reg.y - from.y];
-      }
-      const d = Math.hypot(dx, dy) || 1;
-      const ux = dx / d;
-      const uy = dy / d;
-      // The tail tucks under the group; the head points at the middle.
-      const start = (FRAME_W * px) / 2 - 3 * px;
-      drawArrow(ctx, sx + ux * start, sy + uy * start, ux, uy, colorOf(players, at.owner), px);
+      const [ux, uy] = this.attackDir(at.region, at.side);
+      const half = (ARROW_LEN * px) / 2;
+      drawArrow(ctx, bx - ux * half, by - uy * half, ux, uy, colorOf(players, at.owner), px);
       if (at.swords) {
-        // Beside the arrow's middle, on its upper side, clear of the shaft.
+        // Beside the arrow, on its upper side, clear of the head.
         const [nx, ny] = ux >= 0 ? [uy, -ux] : [-uy, ux];
-        const mid = start + (ARROW_LEN * px) / 2;
-        const off = 13 * px;
-        swords.push([sx + ux * mid + nx * off, sy + uy * mid + ny * off]);
+        const off = 11 * px;
+        swords.push([bx + nx * off, by + ny * off]);
       }
     }
     const blink = Math.floor(now / 300) % 2;
@@ -1934,8 +1924,8 @@ function brackets(ctx: CanvasRenderingContext2D, x: number, y: number, half: num
 }
 
 /** The attack arrow, in sprite cells: its length, the head's length and half-width. */
-const ARROW_LEN = 26;
-const ARROW_HEAD = 10;
+const ARROW_LEN = 17;
+const ARROW_HEAD = 7;
 const ARROW_DIRS = 32;
 const arrowCache = new Map<string, { c: HTMLCanvasElement; ax: number; ay: number }>();
 
@@ -1943,10 +1933,10 @@ const arrowCache = new Map<string, { c: HTMLCanvasElement; ax: number; ay: numbe
 function inArrow(x: number, y: number): boolean {
   if (x < 0 || x > ARROW_LEN) return false;
   const neck = ARROW_LEN - ARROW_HEAD;
-  if (x >= neck) return Math.abs(y) <= 7.5 * ((ARROW_LEN - x) / ARROW_HEAD);
+  if (x >= neck) return Math.abs(y) <= 5.5 * ((ARROW_LEN - x) / ARROW_HEAD);
   // The shaft widens a little toward the head; the tail has a swallowtail notch.
-  const half = 2.5 + x / neck;
-  return Math.abs(y) <= half && x >= 2 * (1 - Math.abs(y) / half);
+  const half = 1.8 + (0.7 * x) / neck;
+  return Math.abs(y) <= half && x >= 1.5 * (1 - Math.abs(y) / half);
 }
 
 /**

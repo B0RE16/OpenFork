@@ -118,10 +118,9 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
   training makes it shorter.
 - **How a fight looks:** units in their own region hold the middle (with a shield showing
   their fort level, whether they're dug in, and a river crossed by the attackers); units
-  attacking or taking a region stand on the border they crossed, one group per border,
-  with a big arrow in their colour pointing in (standing further back when the region is
-  small on screen, so the arrow always fits). One crossed swords per fight, beside the
-  main arrow. Borders between countries at war show as two-colour front lines; units
+  attacking or taking a region get an arrow in their colour sitting halfway across the
+  border they crossed, pointing in, one per border; the units stand on their own side
+  just behind its tail. One crossed swords per fight, beside the main arrow. Borders between countries at war show as two-colour front lines; units
   pulling out of a fight get a grey arrow back.
 - **Retreat:** a blob can leave a battle, but only backwards: to the region it came from or
   to a neighbouring region its owner holds, never on past the enemy. It loses strength and
