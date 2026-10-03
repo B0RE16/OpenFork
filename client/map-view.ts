@@ -521,12 +521,14 @@ export class MapView {
     const ctx = this.supplyLayer.getContext('2d') as CanvasRenderingContext2D;
     this.supplyImg ??= ctx.createImageData(W, this.map.height);
     const d = this.supplyImg.data;
-    const COLORS: Array<[number, number, number] | null> = [null, [79, 209, 255], [255, 179, 71], [255, 90, 90]];
+    // Not yours, in supply, at the edge of reach, cut off, overloaded (more troops than it feeds).
+    const COLORS: Array<[number, number, number] | null> = [null, [79, 209, 255], [232, 226, 122], [255, 90, 90], [255, 179, 71]];
     let [x0, y0, x1, y1] = [W, this.map.height, -1, -1];
     snap.regions.forEach((r, i) => {
-      // 0: not yours, 1: in supply, 2: at the edge of reach, 3: cut off.
+      // 0: not yours, 1: in supply, 2: at the edge of reach, 3: cut off, 4: overloaded.
       const left = this.supply?.left.get(i);
-      const state = r[0] !== you ? 0 : left === undefined ? 3 : left < 2 ? 2 : 1;
+      const over = (this.supply?.need.get(i) ?? 0) > supplyCapacity(this.map.regions[i], r[2]) + 1e-9;
+      const state = r[0] !== you ? 0 : left === undefined ? 3 : over ? 4 : left < 2 ? 2 : 1;
       if (state === this.shownSupply[i]) return;
       this.shownSupply[i] = state;
       const c = COLORS[state];

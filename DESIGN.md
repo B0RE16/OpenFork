@@ -171,8 +171,13 @@ The numbers in "Starting tunables" are first guesses for playtesting; they all l
 ## 7. Supply
 - **Hubs:** every **city** you own (your capital is one). A city reaches 3 + its level
   regions through your land (a level-3 capital: 6); a border with a road counts as half.
-- **Capacity:** each region has a supply capacity by terrain, raised by a city in it. More
-  blobs than capacity means partial supply.
+- **Capacity:** each region feeds 90 by terrain (plains 1, forest 0.9, hills 0.8,
+  mountains 0.6), +25% per city level; infantry needs 1 per strength point, tanks 2. More
+  troops than that means partial supply: the units **overloaded** there slowly wither.
+  The supply overlay shows overloaded regions in orange (the same orange as the cube on
+  their tokens), the region panel shows load against capacity, the unit panel says why a
+  unit is short (overloaded, cut off, or short in foreign land), and the sitrep warns
+  once a minute per region.
 - **Out of supply:**
   - blobs weaken and slowly die;
   - they can't refill or drill;
@@ -241,6 +246,7 @@ going their way. A bot playing for a disconnected person never starts a war.
 | Infantry / tank production | 20 s / 30 s |
 | Truce after peace / peace offer stands | 180 s / 30 s |
 | Supply reach from a city | 3 + its level (roads: half a hop) |
+| Supply capacity of a region | 90 × terrain × (1 + 0.25 × city level); infantry needs 1 per point, tanks 2 |
 | Base yield per region (money / manpower) | 0.12 / 0.15 per s |
 | Starting resources (normal) | $120, 120 manpower, 25 steel, 20 oil |
 | Build times | farm, market 60 s; mine, oil well 75 s; fort 60 s per level; barracks 60 s; factory 120 s; road 30 s |

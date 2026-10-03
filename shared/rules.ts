@@ -131,7 +131,7 @@ export const MERGE_PENALTY = 10;
 export const SUPPLY_REACH_BASE = 3;
 export const ROAD_SUPPLY_HOP = 0.5;
 /** Supply capacity of a region, by terrain, and how much a city in it adds per level. */
-export const SUPPLY_BASE = 30;
+export const SUPPLY_BASE = 90;
 export const SUPPLY_TERRAIN: Record<Terrain, number> = { plains: 1, forest: 0.9, hills: 0.8, mountains: 0.6 };
 export const SUPPLY_PER_CITY_LEVEL = 0.25;
 /** Out of supply: share of size lost per second, and training lost per second. */
